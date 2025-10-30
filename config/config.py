@@ -9,9 +9,12 @@ for d in [DATA_DIR, RESULTS_DIR / "plots", RESULTS_DIR / "models", RESULTS_DIR /
 
 #dataset
 NUM_ROBOTS = 10
-SEQUENCE_LENGTH = 50
+SEQUENCE_LENGTH = 128
 NUM_FEATURES = 6
 NUM_CLASSES = 5
+NUM_FEATURES = 9
+NUM_CLASSES = 6  #walking, walking_upstairs, walking_downstairs, sitting, standing, laying from HAR dataset
+ALPHA = 0.5
 
 #model
 HIDDEN_SIZE = 128

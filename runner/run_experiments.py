@@ -2,20 +2,18 @@ import torch
 import sys
 from pathlib import Path
 
-
 sys.path.append(str(Path(__file__).parent))
 
 from config import config
 from data.dataset_loader import load_data_for_clients, get_dataloader
-from models.lstm_model import create_model
+from models.model import create_model
 from federated.baseline_fl import FlowerClient, run_fedavg
 from federated.clustered_fl import ClusteredFlowerClient, run_clustered_fl
 from utils.utils import set_seed, get_device, save_results
 
-
 def run_baseline_experiment(train_datasets, test_dataset, device):
     print("\n" + "="*80)
-    print("EXPERIMENT 1: BASELINE FEDERATED LEARNING (FedAvg)")
+    print("EXPERIMENT 1: BASELINE FEDERATED LEARNING")
     print("="*80)
     
     test_loader = get_dataloader(test_dataset, config.BATCH_SIZE, shuffle=False)

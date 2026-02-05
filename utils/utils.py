@@ -38,3 +38,18 @@ def print_metrics(metrics, prefix=""):
     print(f"{prefix}F1-Score: {metrics['f1']:.4f}")
     print(f"{prefix}Precision: {metrics['precision']:.4f}")
     print(f"{prefix}Recall: {metrics['recall']:.4f}")
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+def get_device(device_name):
+    if device_name == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")

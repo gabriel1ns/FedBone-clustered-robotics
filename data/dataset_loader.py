@@ -30,17 +30,9 @@ def load_har_data(data_dir):
     y_train = y_train - 1
     y_test = y_test - 1
     
-    #(n_samples, sequence_length, num_features)
-    
-    sequence_length = 128
-    num_features = X_train.shape[1] // sequence_length
-    
-    if X_train.shape[1] % sequence_length != 0:
-        X_train = X_train.reshape(-1, 1, X_train.shape[1])
-        X_test = X_test.reshape(-1, 1, X_test.shape[1])
-    else:
-        X_train = X_train.reshape(-1, sequence_length, num_features)
-        X_test = X_test.reshape(-1, sequence_length, num_features)
+    # Reshape to (n_samples, sequence_length=1, num_features=561)
+    X_train = X_train.reshape(-1, 1, X_train.shape[1])
+    X_test = X_test.reshape(-1, 1, X_test.shape[1])
     
     return X_train, y_train.astype(int), X_test, y_test.astype(int)
 

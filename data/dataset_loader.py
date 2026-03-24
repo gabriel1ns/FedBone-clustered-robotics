@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from sklearn.model_selection import train_test_split
@@ -21,10 +20,10 @@ class HARDataset(Dataset):
 def load_har_data(data_dir):
     data_dir = Path(data_dir)
     
-    X_train = np.loadtxt(data_dir / 'train' / 'X_train.txt')
+    X_train = np.loadtxt(data_dir / 'train' / 'X_train.txt', dtype=np.float32)
     y_train = np.loadtxt(data_dir / 'train' / 'y_train.txt')
     
-    X_test = np.loadtxt(data_dir / 'test' / 'X_test.txt')
+    X_test = np.loadtxt(data_dir / 'test' / 'X_test.txt', dtype=np.float32)
     y_test = np.loadtxt(data_dir / 'test' / 'y_test.txt')
     
     y_train = y_train - 1

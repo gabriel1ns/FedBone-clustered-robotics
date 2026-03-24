@@ -10,7 +10,7 @@ class MultiTaskDataset(Dataset):
     """Dataset that supports multiple tasks with different label spaces"""
     
     def __init__(self, sequences, labels, task_type='classification', task_id=0):
-        self.sequences = torch.FloatTensor(sequences)
+        self.sequences = torch.FloatTensor(np.array(sequences, dtype=np.float32))
         self.labels = torch.LongTensor(labels) if task_type == 'classification' else torch.FloatTensor(labels)
         self.task_type = task_type
         self.task_id = task_id

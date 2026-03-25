@@ -15,23 +15,19 @@ from data.dataset_loader import get_dataloader
 
 class FedBoneClientTrainer:
     """Handles client-side training in split learning setup"""
-    
-    def __init__(self, client_id, client_model, train_dataset, device, 
-                 batch_size, learning_rate, local_epochs, task_type='classification'):
-        self.client_id = client_id
-        self.client_model = client_model.to(device)
+    def __init__(self, server_model, device, num_clients, embed_dim):
+        self.server_model = server_model.to(device)
         self.device = device
-        self.train_loader = get_dataloader(train_dataset, batch_size, shuffle=True)
-        self.learning_rate = learning_rate
-        self.local_epochs = local_epochs
-        self.num_samples = len(train_dataset)
-        self.task_type = task_type
+        self.num_clients = num_clients
+        self.stored_features = {}  # ADICIONE ISSO
         
-        # Optimizer only for client-side parameters
-        self.optimizer = optim.Adam(
-            self.client_model.get_client_parameters(),
-            lr=learning_rate
-        )
+        self.client_general_models = {}
+        for i in range(num_clients):
+            self.client_general_models[i] = copy.deepcopy(server_model)
+        
+        total_params = sum(p.numel() for p in server_model.parameters())
+        self.gp_aggregator = GPAggregation(gradient_dim=total_params)
+        self.optimizer = optim.Adam(server_model.parameters(), lr=0.001)
         
     def compute_embeddings(self, batch_x):
         """Step 1: Compute embeddings to send to server"""
@@ -48,21 +44,17 @@ class FedBoneClientTrainer:
         Returns: gradients to send back to server
         """
         self.client_model.train()
+    
+        # Detach e reabilita grad para capturar gradiente corretamente
+        general_features = general_features.detach().requires_grad_(True)
         
-        # Complete task-specific forward pass
         outputs = self.client_model(None, general_features=general_features)
-        
-        # Compute loss
         loss = criterion(outputs, labels)
         
-        # Backward pass
         self.optimizer.zero_grad()
         loss.backward()
         
-        # Get gradient w.r.t. general_features to send to server
-        grad_general_features = general_features.grad
-        
-        # Update client-side parameters
+        grad_general_features = general_features.grad  # Agora funciona
         self.optimizer.step()
         
         return grad_general_features, loss.item(), outputs
@@ -97,16 +89,15 @@ class FedBoneServer:
         self.optimizer = optim.Adam(server_model.parameters(), lr=0.001)
         
     def forward_for_client(self, client_id, embeddings):
-        """Step 2: Process embeddings and return general features"""
         model = self.client_general_models[client_id]
         model.train()
+        model.zero_grad()
         
-        # Ensure embeddings require grad for backward pass
-        embeddings.requires_grad_(True)
+        stored_emb = embeddings.detach().clone().requires_grad_(True)
+        general_features = model(stored_emb)
+        self.stored_features[client_id] = general_features  # guarda com grafo
         
-        general_features = model(embeddings)
-        
-        return general_features
+        return general_features.detach()  # envia detachado ao cliente
     
     def backward_from_client(self, client_id, grad_general_features):
         """

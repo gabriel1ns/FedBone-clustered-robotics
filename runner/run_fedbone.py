@@ -84,7 +84,8 @@ def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
     )
     
     # Use first task's test set for evaluation
-    primary_test_task = list(test_datasets.values())[0]
+    client_0_task_id = client_datasets[0][0]['task_id']
+    primary_test_task = test_datasets[client_0_task_id]
     test_loader = get_dataloader(primary_test_task, config.BATCH_SIZE, shuffle=False)
     
     print("\n[4/4] Running FedBone training...")

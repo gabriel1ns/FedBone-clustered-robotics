@@ -19,13 +19,14 @@ class GPAggregation:
         self.previous_aggregated_grad = None
         
     def flatten_gradients(self, model_grads):
-        """Flatten model gradients to 1D vector"""
         flat_grads = []
         for grad in model_grads.values():
             if grad is not None:
                 flat_grads.append(grad.flatten())
+        if not flat_grads:
+            return torch.zeros(1)
         return torch.cat(flat_grads)
-    
+        
     def unflatten_gradients(self, flat_grad, model_grads_template):
         """Unflatten 1D gradient back to model structure"""
         unflat_grads = OrderedDict()

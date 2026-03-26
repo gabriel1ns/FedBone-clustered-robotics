@@ -15,19 +15,21 @@ from data.dataset_loader import get_dataloader
 
 class FedBoneClientTrainer:
     """Handles client-side training in split learning setup"""
-    def __init__(self, server_model, device, num_clients, embed_dim):
-        self.server_model = server_model.to(device)
+    def __init__(self, client_id, client_model, train_dataset, device, 
+                 batch_size, learning_rate, local_epochs, task_type='classification'):
+        self.client_id = client_id
+        self.client_model = client_model.to(device)
         self.device = device
-        self.num_clients = num_clients
-        self.stored_features = {}  # ADICIONE ISSO
+        self.train_loader = get_dataloader(train_dataset, batch_size, shuffle=True)
+        self.learning_rate = learning_rate
+        self.local_epochs = local_epochs
+        self.num_samples = len(train_dataset)
+        self.task_type = task_type
         
-        self.client_general_models = {}
-        for i in range(num_clients):
-            self.client_general_models[i] = copy.deepcopy(server_model)
-        
-        total_params = sum(p.numel() for p in server_model.parameters())
-        self.gp_aggregator = GPAggregation(gradient_dim=total_params)
-        self.optimizer = optim.Adam(server_model.parameters(), lr=0.001)
+        self.optimizer = optim.Adam(
+            self.client_model.get_client_parameters(),
+            lr=learning_rate
+        )
         
     def compute_embeddings(self, batch_x):
         """Step 1: Compute embeddings to send to server"""
@@ -45,16 +47,16 @@ class FedBoneClientTrainer:
         """
         self.client_model.train()
     
-        # Detach e reabilita grad para capturar gradiente corretamente
-        general_features = general_features.detach().requires_grad_(True)
+        self.client_model.train()
         
+        general_features = general_features.detach().requires_grad_(True)
         outputs = self.client_model(None, general_features=general_features)
         loss = criterion(outputs, labels)
         
         self.optimizer.zero_grad()
         loss.backward()
         
-        grad_general_features = general_features.grad  # Agora funciona
+        grad_general_features = general_features.grad.clone() if general_features.grad is not None else torch.zeros_like(general_features)
         self.optimizer.step()
         
         return grad_general_features, loss.item(), outputs
@@ -75,6 +77,7 @@ class FedBoneServer:
         self.server_model = server_model.to(device)
         self.device = device
         self.num_clients = num_clients
+        self.stored_features = {}
         
         # Maintain separate general model for each client during mini-batch
         self.client_general_models = {}
@@ -107,14 +110,22 @@ class FedBoneServer:
         """
         model = self.client_general_models[client_id]
         
-        # Store gradients for this client
+        if grad_general_features is None:
+            return OrderedDict()
+        
+        model = self.client_general_models[client_id]
+        stored_features = self.stored_features[client_id]
+        
+        model.zero_grad()
+        stored_features.backward(grad_general_features)
+        
         client_grads = OrderedDict()
         for name, param in model.named_parameters():
             if param.grad is not None:
                 client_grads[name] = param.grad.clone()
         
         return client_grads
-    
+        
     def aggregate_and_update(self, client_gradients, client_sizes, use_gp=True):
         """
         Step 5: Aggregate gradients from all clients and update general model
@@ -263,36 +274,35 @@ def run_fedbone(clients: List[FedBoneClientTrainer],
 
 def evaluate_fedbone(sample_client, server, test_loader, device, criterion):
     """Evaluate FedBone model on test set"""
-    
     sample_client.client_model.eval()
     server.server_model.eval()
     
     all_preds = []
     all_labels = []
     total_loss = 0
+    num_batches = 0
     
     with torch.no_grad():
         for sequences, labels in test_loader:
             sequences = sequences.to(device)
             labels = labels.to(device)
             
-            # Step 1: Compute embeddings
             embeddings = sample_client.client_model(sequences, general_features=None)
-            
-            # Step 2: Get general features from server
             general_features = server.server_model(embeddings)
-            
-            # Step 3: Complete task-specific forward
             outputs = sample_client.client_model(None, general_features=general_features)
             
-            loss = criterion(outputs, labels)
-            total_loss += loss.item()
+            try:
+                loss = criterion(outputs, labels)
+                total_loss += loss.item()
+            except Exception:
+                pass
             
+            num_batches += 1
             _, preds = torch.max(outputs, 1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
     
     metrics = calculate_metrics(all_labels, all_preds)
-    avg_loss = total_loss / len(test_loader)
+    avg_loss = total_loss / max(num_batches, 1)
     
     return metrics

@@ -263,40 +263,32 @@ def load_multitask_data(data_dir, num_clients, num_tasks=3, task_distribution='m
     
     # Create test datasets for each task
     test_datasets = {}
+    test_datasets = {}
     for i, task in enumerate(tasks):
         if task['type'] == 'classification':
-            # Filter test data for this task
-            if 'binary_mapping' in [tc for tc in [
-                {'name': 'activity_classification', 'type': 'classification', 'classes': [0, 1, 2, 3, 4, 5]},
-                {'name': 'stationary_vs_moving', 'type': 'classification', 'classes': [3, 4, 5, 0, 1, 2], 
-                 'binary_mapping': {3: 0, 4: 0, 5: 0, 0: 1, 1: 1, 2: 1}},
-            ] if tc['name'] == task['name']][0] if any(tc['name'] == task['name'] for tc in [
-                {'name': 'activity_classification', 'type': 'classification', 'classes': [0, 1, 2, 3, 4, 5]},
-                {'name': 'stationary_vs_moving', 'type': 'classification', 'classes': [3, 4, 5, 0, 1, 2], 
-                 'binary_mapping': {3: 0, 4: 0, 5: 0, 0: 1, 1: 1, 2: 1}},
-            ]) else {}:
-                # Binary mapping task
-                config = [tc for tc in [
-                    {'name': 'stationary_vs_moving', 'type': 'classification', 'classes': [3, 4, 5, 0, 1, 2], 
-                     'binary_mapping': {3: 0, 4: 0, 5: 0, 0: 1, 1: 1, 2: 1}},
-                ] if tc['name'] == task['name']][0]
-                test_labels = np.array([config['binary_mapping'].get(label, -1) for label in y_test])
+            if task['name'] == 'stationary_vs_moving':
+                binary_mapping = {3: 0, 4: 0, 5: 0, 0: 1, 1: 1, 2: 1}
+                test_labels = np.array([binary_mapping.get(int(l), -1) for l in y_test])
                 valid_idx = test_labels >= 0
                 test_data = X_test[valid_idx]
                 test_labels = test_labels[valid_idx]
+            elif task['name'] == 'walking_variants':
+                valid_idx = np.isin(y_test, [0, 1, 2])
+                test_data = X_test[valid_idx]
+                test_labels = y_test[valid_idx]
             else:
                 test_data = X_test
                 test_labels = y_test
         else:
-            # Regression task
+            intensity_map = {0: 0.5, 1: 0.8, 2: 0.6, 3: 0.1, 4: 0.15, 5: 0.0}
             test_data = X_test
-            test_labels = y_test
-        
+            test_labels = np.array([intensity_map[int(l)] for l in y_test], dtype=np.float32)
+
         test_datasets[i] = MultiTaskDataset(
-            test_data,
+            np.array(test_data, dtype=np.float32),
             test_labels,
             task_type=task['type'],
             task_id=i
         )
-    
+
     return client_datasets, test_datasets, tasks

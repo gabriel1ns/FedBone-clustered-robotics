@@ -261,36 +261,33 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
 
 
 def evaluate_fedbone(sample_client, server, test_loader, device, criterion):
-    """Evaluate FedBone model on test set"""
     sample_client.client_model.eval()
     server.server_model.eval()
-    
+
     all_preds = []
     all_labels = []
     total_loss = 0
     num_batches = 0
-    
+
     with torch.no_grad():
         for sequences, labels in test_loader:
             sequences = sequences.to(device)
             labels = labels.to(device)
-            
+
             embeddings = sample_client.client_model(sequences, general_features=None)
             general_features = server.server_model(embeddings)
             outputs = sample_client.client_model(None, general_features=general_features)
-            
+
             try:
                 loss = criterion(outputs, labels)
                 total_loss += loss.item()
             except Exception:
                 pass
-            
+
             num_batches += 1
             _, preds = torch.max(outputs, 1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
-    
+
     metrics = calculate_metrics(all_labels, all_preds)
-    avg_loss = total_loss / max(num_batches, 1)
-    
     return metrics

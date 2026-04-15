@@ -164,111 +164,99 @@ class FedBoneServer:
         return self.server_model.state_dict()
 
 
-def run_fedbone(clients: List[FedBoneClientTrainer], 
-                server: FedBoneServer,
-                test_loader,
-                device,
-                num_rounds: int,
-                clients_per_round: int,
-                use_gp_aggregation: bool = True):
-    """
-    Main FedBone training loop with split learning
-    
-    Implements Algorithm 1 from FedBone paper
-    """
-    
+def run_fedbone(clients, server, test_loader, device, num_rounds,
+                clients_per_round, use_gp_aggregation=True):
+
     history = {
-        'rounds': [],
-        'accuracy': [],
-        'f1': [],
-        'loss': [],
-        'conflict_scores': []
+        'rounds': [], 'accuracy': [], 'f1': [],
+        'loss': [], 'conflict_scores': []
     }
-    
+
     criterion = nn.CrossEntropyLoss()
-    
+
     print("\n" + "="*80)
     print("FEDBONE TRAINING")
     print("="*80)
     print(f"GP Aggregation: {'ENABLED' if use_gp_aggregation else 'DISABLED'}")
-    
+
     for round_num in range(num_rounds):
         print(f"\n{'='*60}")
         print(f"Round {round_num + 1}/{num_rounds}")
         print(f"{'='*60}")
-        
-        # Select clients for this round
+
         import random
         selected_clients = random.sample(clients, clients_per_round)
-        
+
         round_gradients = []
         round_sizes = []
         round_losses = []
-        
-        # Process each selected client
+
         for client in selected_clients:
+            # Resetar gradientes do modelo do servidor para este cliente
+            client_server_model = server.client_general_models[client.client_id]
+            client_server_model.train()
+            client.client_model.train()
+
+            client_optimizer = optim.Adam(
+                list(client.client_model.parameters()) +
+                list(client_server_model.parameters()),
+                lr=client.learning_rate
+            )
+
             client_loss_sum = 0
             num_batches = 0
-            
-            for batch_x, batch_y in client.train_loader:
-                batch_x = batch_x.to(device)
-                batch_y = batch_y.to(device)
-                
-                # Step 1: Client computes embeddings
-                embeddings = client.compute_embeddings(batch_x)
-                
-                # Step 2: Server processes embeddings
-                general_features = server.forward_for_client(
-                    client.client_id, 
-                    embeddings
-                )
-                
-                # Step 3: Client completes forward, computes loss, backwards
-                grad_features, loss, outputs = client.backward_from_server(
-                    general_features,
-                    batch_y,
-                    criterion
-                )
-                
-                client_loss_sum += loss
-                num_batches += 1
-                
-                # Step 4: Server computes gradients for general model
-                client_grads = server.backward_from_client(
-                    client.client_id,
-                    grad_features
-                )
-            
-            # Store client gradients and info
+
+            for epoch in range(client.local_epochs):
+                for batch_x, batch_y in client.train_loader:
+                    batch_x = batch_x.to(device)
+                    batch_y = batch_y.to(device)
+
+                    client_optimizer.zero_grad()
+
+                    # Forward end-to-end (simulação de split learning)
+                    embeddings = client.client_model(batch_x, general_features=None)
+                    general_features = client_server_model(embeddings)
+                    outputs = client.client_model(None, general_features=general_features)
+
+                    loss = criterion(outputs, batch_y)
+                    loss.backward()
+                    client_optimizer.step()
+
+                    client_loss_sum += loss.item()
+                    num_batches += 1
+
+            # Coletar gradientes do modelo do servidor para este cliente
+            client_grads = OrderedDict()
+            for name, param in client_server_model.named_parameters():
+                if param.grad is not None:
+                    client_grads[name] = param.grad.clone()
+                else:
+                    client_grads[name] = torch.zeros_like(param)
+
             round_gradients.append(client_grads)
             round_sizes.append(client.num_samples)
-            round_losses.append(client_loss_sum / num_batches)
-        
-        # Step 5: Server aggregates gradients
+            round_losses.append(client_loss_sum / max(num_batches, 1))
+
+        # Agregar gradientes no servidor global
         conflict_score = server.aggregate_and_update(
-            round_gradients,
-            round_sizes,
-            use_gp=use_gp_aggregation
+            round_gradients, round_sizes, use_gp=use_gp_aggregation
         )
-        
+
         avg_loss = sum(round_losses) / len(round_losses)
-        
-        # Evaluation on test set
         metrics = evaluate_fedbone(clients[0], server, test_loader, device, criterion)
-        
-        # Record history
+
         history['rounds'].append(round_num + 1)
         history['accuracy'].append(metrics['accuracy'])
         history['f1'].append(metrics['f1'])
         history['loss'].append(avg_loss)
         history['conflict_scores'].append(conflict_score)
-        
+
         print(f"\nRound {round_num + 1} Results:")
         print(f"  Accuracy: {metrics['accuracy']:.4f}")
         print(f"  F1-Score: {metrics['f1']:.4f}")
         print(f"  Loss: {avg_loss:.4f}")
         print(f"  Gradient Conflict: {conflict_score:.4f}")
-    
+
     return history
 
 

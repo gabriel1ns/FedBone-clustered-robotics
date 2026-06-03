@@ -34,6 +34,30 @@ O fluxo por round é:
 
 ---
 
+## Overview da Pesquisa
+
+O documento [docs/fedbone_robotics_overview.md](docs/fedbone_robotics_overview.md) resume o artigo FedBone e adapta a proposta para o contexto de robótica em nuvem, incluindo as métricas do artigo e as métricas adicionais necessárias para avaliar sistemas robóticos.
+
+---
+
+## Métricas Robóticas
+
+Além de acurácia e F1-score, o projeto registra ou disponibiliza utilitários para:
+
+- Task Success Rate (TSR)
+- erro de posicionamento em mm
+- rounds até convergência
+- latência de inferência end-to-end
+- acurácia cross-cluster
+- acurácia por cluster
+- bytes transmitidos por round
+
+As funções reutilizáveis ficam em `utils/robotics_metrics.py`. No HAR, TSR é usado como proxy de sucesso da tarefa; em datasets robóticos reais, ele deve ser calculado a partir de labels de sucesso/falha da execução.
+
+As métricas de visão multi-tarefa usadas no artigo, como mIoU, RMSE, mErr, odsF e maxF, ficam em `utils/vision_mtl_metrics.py` para preparar a adaptação futura ao NYUv2/PASCAL.
+
+---
+
 ## Estrutura do Projeto
 
 ```
@@ -57,6 +81,8 @@ FedBone-robotics/
 │   └── run_fedbone.py          # Executa FedBone
 └── utils/
     ├── utils.py                # Métricas e helpers gerais
+    ├── robotics_metrics.py     # Métricas específicas para robótica e cloud robotics
+    ├── vision_mtl_metrics.py   # Métricas NYUv2/PASCAL usadas no artigo FedBone
     ├── visualization.py        # Plots para FedAvg e Clustered FL
     └── fedbone_visualization.py # Plots para FedBone
 ```

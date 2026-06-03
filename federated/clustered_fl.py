@@ -12,6 +12,7 @@ import sys
 sys.path.append('..')
 
 from utils.utils import calculate_metrics, aggregate_weights
+from utils.robotics_metrics import rounds_to_convergence, state_dict_nbytes
 from data.dataset_loader import get_dataloader
 
 
@@ -135,7 +136,12 @@ def run_clustered_fl(clients, cluster_models, test_loader, device, num_rounds,
         'accuracy': [],
         'f1': [],
         'loss': [],
-        'cluster_distribution': []
+        'cluster_distribution': [],
+        'per_cluster_accuracy': [],
+        'cross_cluster_accuracy': [],
+        'cluster_accuracy_std': [],
+        'communication_bytes_per_round': [],
+        'communication_mb_per_round': [],
     }
     
     # Clustering inicial
@@ -166,12 +172,15 @@ def run_clustered_fl(clients, cluster_models, test_loader, device, num_rounds,
         all_preds = []
         all_labels = []
         total_loss = 0
+        per_cluster_accuracy = {}
         
         criterion = nn.CrossEntropyLoss()
         
         for cluster_id, model_client in cluster_models.items():
             model = model_client.model
             model.eval()
+            cluster_preds = []
+            cluster_labels = []
             
             with torch.no_grad():
                 for sequences, labels in test_loader:
@@ -185,8 +194,12 @@ def run_clustered_fl(clients, cluster_models, test_loader, device, num_rounds,
                     _, preds = torch.max(outputs, 1)
                     all_preds.extend(preds.cpu().numpy())
                     all_labels.extend(labels.cpu().numpy())
+                    cluster_preds.extend(preds.cpu().numpy())
+                    cluster_labels.extend(labels.cpu().numpy())
+
+            cluster_metrics = calculate_metrics(cluster_labels, cluster_preds)
+            per_cluster_accuracy[str(cluster_id)] = cluster_metrics['accuracy']
         
-        metrics = calculate_metrics(all_labels, all_labels) #change afterwards
         avg_loss = total_loss / (len(test_loader) * len(cluster_models))
         
         
@@ -206,6 +219,15 @@ def run_clustered_fl(clients, cluster_models, test_loader, device, num_rounds,
                 all_labels.extend(labels.cpu().numpy())
         
         metrics = calculate_metrics(all_labels, all_preds)
+        cluster_accuracy_values = list(per_cluster_accuracy.values())
+        cross_cluster_accuracy = (
+            sum(value for key, value in per_cluster_accuracy.items() if int(key) != largest_cluster[0])
+            / max(len(per_cluster_accuracy) - 1, 1)
+        )
+        communication_bytes = 0
+        for cluster_id, cluster_clients in clusters.items():
+            cluster_model_bytes = state_dict_nbytes(cluster_models[cluster_id].model.state_dict())
+            communication_bytes += 2 * cluster_model_bytes * len(cluster_clients)
         
     
         history['rounds'].append(round_num + 1)
@@ -213,10 +235,19 @@ def run_clustered_fl(clients, cluster_models, test_loader, device, num_rounds,
         history['f1'].append(metrics['f1'])
         history['loss'].append(avg_loss)
         history['cluster_distribution'].append([len(c) for c in clusters.values()])
+        history['per_cluster_accuracy'].append(per_cluster_accuracy)
+        history['cross_cluster_accuracy'].append(cross_cluster_accuracy)
+        history['cluster_accuracy_std'].append(float(np.std(cluster_accuracy_values)))
+        history['communication_bytes_per_round'].append(int(communication_bytes))
+        history['communication_mb_per_round'].append(communication_bytes / (1024**2))
         
         print(f"\nRound {round_num + 1} Results:")
         print(f"  Accuracy: {metrics['accuracy']:.4f}")
         print(f"  F1-Score: {metrics['f1']:.4f}")
         print(f"  Loss: {avg_loss:.4f}")
+        print(f"  Per-cluster Accuracy: {per_cluster_accuracy}")
+        print(f"  Cross-cluster Accuracy: {cross_cluster_accuracy:.4f}")
+        print(f"  Communication: {communication_bytes / (1024**2):.2f} MB")
     
+    history['rounds_to_convergence'] = rounds_to_convergence(history['accuracy'])
     return history

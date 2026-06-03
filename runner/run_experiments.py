@@ -10,6 +10,7 @@ from models.model import create_model
 from federated.baseline_fl import FlowerClient, run_fedavg
 from federated.clustered_fl import ClusteredFlowerClient, run_clustered_fl
 from utils.utils import set_seed, get_device, save_results
+from utils.robotics_metrics import rounds_to_convergence, state_dict_nbytes
 
 def run_baseline_experiment(train_datasets, test_dataset, device):
     print("\n" + "="*80)
@@ -65,6 +66,16 @@ def run_baseline_experiment(train_datasets, test_dataset, device):
         clients_per_round=config.CLIENTS_PER_ROUND
     )
     
+    model_bytes = state_dict_nbytes(global_model.state_dict())
+    communication_bytes_per_round = [
+        2 * model_bytes * config.CLIENTS_PER_ROUND
+        for _ in range(config.NUM_ROUNDS)
+    ]
+    centralized_accuracy = [
+        round_metrics.get("accuracy", 0.0)
+        for _, round_metrics in history.metrics_centralized
+    ]
+
     results = {
         "experiment": "baseline_fedavg",
         "config": {
@@ -79,6 +90,11 @@ def run_baseline_experiment(train_datasets, test_dataset, device):
         "metrics": {
             "losses_centralized": history.losses_centralized,
             "metrics_centralized": history.metrics_centralized,
+            "rounds_to_convergence": rounds_to_convergence(centralized_accuracy),
+            "communication_bytes_per_round": communication_bytes_per_round,
+            "communication_mb_per_round": [
+                value / (1024**2) for value in communication_bytes_per_round
+            ],
         }
     }
     

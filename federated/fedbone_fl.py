@@ -10,6 +10,12 @@ sys.path.append('..')
 from models.fedbone_model import create_fedbone_client, create_fedbone_server
 from federated.gp_aggregation import GPAggregation, compute_gradient_conflict_score
 from utils.utils import calculate_metrics
+from utils.robotics_metrics import (
+    SplitCommunicationMeter,
+    measure_inference_latency,
+    rounds_to_convergence,
+    task_success_rate,
+)
 from data.dataset_loader import get_dataloader
 
 
@@ -169,7 +175,12 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
 
     history = {
         'rounds': [], 'accuracy': [], 'f1': [],
-        'loss': [], 'conflict_scores': []
+        'loss': [], 'conflict_scores': [],
+        'task_success_rate': [],
+        'inference_latency_ms': [],
+        'communication_bytes_per_round': [],
+        'communication_mb_per_round': [],
+        'communication_breakdown': [],
     }
 
     criterion = nn.CrossEntropyLoss()
@@ -190,6 +201,7 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
         round_gradients = []
         round_sizes = []
         round_losses = []
+        communication_meter = SplitCommunicationMeter()
 
         for client in selected_clients:
             # Resetar gradientes do modelo do servidor para este cliente
@@ -216,6 +228,7 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
                     # Forward end-to-end (simulação de split learning)
                     embeddings = client.client_model(batch_x, general_features=None)
                     general_features = client_server_model(embeddings)
+                    communication_meter.record_split_batch(embeddings, general_features)
                     outputs = client.client_model(None, general_features=general_features)
 
                     loss = criterion(outputs, batch_y)
@@ -243,24 +256,41 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
         )
 
         avg_loss = sum(round_losses) / len(round_losses)
-        metrics = evaluate_fedbone(clients[0], server, test_loader, device, criterion)
+        metrics = evaluate_fedbone(
+            clients[0],
+            server,
+            test_loader,
+            device,
+            criterion,
+            measure_latency=True,
+        )
+        communication_summary = communication_meter.summary()
 
         history['rounds'].append(round_num + 1)
         history['accuracy'].append(metrics['accuracy'])
         history['f1'].append(metrics['f1'])
         history['loss'].append(avg_loss)
         history['conflict_scores'].append(conflict_score)
+        history['task_success_rate'].append(metrics['task_success_rate'])
+        history['inference_latency_ms'].append(metrics['inference_latency_ms'])
+        history['communication_bytes_per_round'].append(communication_summary['total_bytes'])
+        history['communication_mb_per_round'].append(communication_summary['total_mb'])
+        history['communication_breakdown'].append(communication_summary)
 
         print(f"\nRound {round_num + 1} Results:")
         print(f"  Accuracy: {metrics['accuracy']:.4f}")
         print(f"  F1-Score: {metrics['f1']:.4f}")
+        print(f"  Task Success Rate: {metrics['task_success_rate']:.4f}")
         print(f"  Loss: {avg_loss:.4f}")
         print(f"  Gradient Conflict: {conflict_score:.4f}")
+        print(f"  Inference Latency: {metrics['inference_latency_ms']['mean_ms']:.2f} ms")
+        print(f"  Communication: {communication_summary['total_mb']:.2f} MB")
 
+    history['rounds_to_convergence'] = rounds_to_convergence(history['accuracy'])
     return history
 
 
-def evaluate_fedbone(sample_client, server, test_loader, device, criterion):
+def evaluate_fedbone(sample_client, server, test_loader, device, criterion, measure_latency=False):
     sample_client.client_model.eval()
     server.server_model.eval()
 
@@ -290,4 +320,18 @@ def evaluate_fedbone(sample_client, server, test_loader, device, criterion):
             all_labels.extend(labels.cpu().numpy())
 
     metrics = calculate_metrics(all_labels, all_preds)
+    metrics['task_success_rate'] = task_success_rate(all_labels, all_preds)
+    if measure_latency:
+        metrics['inference_latency_ms'] = measure_inference_latency(
+            test_loader,
+            device,
+            lambda inputs: sample_client.client_model(
+                None,
+                general_features=server.server_model(
+                    sample_client.client_model(inputs, general_features=None)
+                ),
+            ),
+        )
+    else:
+        metrics['inference_latency_ms'] = {"mean_ms": 0.0, "median_ms": 0.0, "p95_ms": 0.0}
     return metrics

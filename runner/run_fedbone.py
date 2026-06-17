@@ -60,6 +60,38 @@ def build_test_loaders(test_datasets):
     }
 
 
+def save_fedbone_checkpoint(server, clients, tasks, path, embed_dim, hidden_size, num_layers):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    client_states = {}
+    for client in clients:
+        task_id = int(client.task_id)
+        if task_id in client_states:
+            continue
+        client_states[task_id] = {
+            "client_id": int(client.client_id),
+            "robot_id": int(getattr(client, "robot_id", client.client_id)),
+            "task_id": task_id,
+            "task_name": client.task_name,
+            "task_type": client.task_type,
+            "state_dict": client.client_model.state_dict(),
+        }
+
+    torch.save(
+        {
+            "server_state_dict": server.server_model.state_dict(),
+            "client_states": client_states,
+            "tasks": tasks,
+            "model_config": {
+                "embed_dim": embed_dim,
+                "hidden_size": hidden_size,
+                "num_layers": num_layers,
+                "dropout": config.DROPOUT,
+            },
+        },
+        path,
+    )
+
+
 def load_configured_multitask_data():
     if config.DATASET.lower() == "robomimic":
         client_datasets, test_datasets, tasks = load_robomimic_data(
@@ -188,6 +220,18 @@ def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
     results_path = config.RESULTS_DIR / "fedbone_multitask_results.json"
     save_results(results, results_path)
     print(f"\nOK Results saved to: {results_path}")
+
+    checkpoint_path = config.RESULTS_DIR / "models" / "fedbone_multitask_final.pth"
+    save_fedbone_checkpoint(
+        server,
+        clients,
+        tasks,
+        checkpoint_path,
+        EMBED_DIM,
+        HIDDEN_SIZE,
+        NUM_LAYERS,
+    )
+    print(f"OK Checkpoint saved to: {checkpoint_path}")
     
     if len(history_gp['rounds']) > 0:
         print("\nFinal Results (with GP Aggregation):")
@@ -249,6 +293,18 @@ def compare_gp_vs_baseline(client_datasets, test_datasets, tasks, device):
         )
         
         results_comparison[exp_name] = history
+
+        checkpoint_path = config.RESULTS_DIR / "models" / f"fedbone_{exp_name}_final.pth"
+        save_fedbone_checkpoint(
+            server,
+            clients,
+            tasks,
+            checkpoint_path,
+            EMBED_DIM,
+            HIDDEN_SIZE,
+            config.NUM_LAYERS,
+        )
+        print(f"OK {exp_name} checkpoint saved to: {checkpoint_path}")
     
     # Save comparison
     comparison_results = {

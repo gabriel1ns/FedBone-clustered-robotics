@@ -31,12 +31,12 @@ EMBED_DIM = 64           # Embedding dimension (client-side)
 GENERAL_HIDDEN = 128     # General model hidden size (server-side)
 ADAPTATION_HEADS = 4     # Multi-head attention heads in task adaptation
 
-BATCH_SIZE = 32
-LOCAL_EPOCHS = 5
-LEARNING_RATE = 0.001
+BATCH_SIZE = 64
+LOCAL_EPOCHS = 2
+LEARNING_RATE = 0.0005
 
-NUM_ROUNDS = 50
-CLIENTS_PER_ROUND = 5
+NUM_ROUNDS = 30
+CLIENTS_PER_ROUND = 10
 
 NUM_CLUSTERS = 3
 CLUSTERING_METHOD = "kmeans"  # "kmeans" or "hierarchical"

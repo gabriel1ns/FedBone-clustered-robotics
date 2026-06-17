@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+venv*/
 *.egg-info/
 dist/
 build/
@@ -19,6 +20,7 @@ data/robomimic/*
 results/plots/*.png
 results/models/*.pth
 results/logs/*.log
+MUJOCO_LOG.TXT
 *.pth
 *.png
 

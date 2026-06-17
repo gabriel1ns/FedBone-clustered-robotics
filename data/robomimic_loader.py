@@ -127,6 +127,31 @@ def _load_task_file(path: Path, obs_keys, test_ratio, max_demos, seed):
     return train_x, train_y, test_x, test_y, selected_obs_keys
 
 
+def _safe_std(values: np.ndarray, axis=0) -> np.ndarray:
+    std = values.std(axis=axis).astype(np.float32)
+    return np.where(std < 1e-6, 1.0, std)
+
+
+def _normalize_task_arrays(train_x, train_y, test_x, test_y):
+    obs_mean = train_x.mean(axis=(0, 1), keepdims=True).astype(np.float32)
+    obs_std = _safe_std(train_x, axis=(0, 1))[None, None, :]
+    action_mean = train_y.mean(axis=0, keepdims=True).astype(np.float32)
+    action_std = _safe_std(train_y, axis=0)[None, :]
+
+    train_x_norm = (train_x - obs_mean) / obs_std
+    test_x_norm = (test_x - obs_mean) / obs_std
+    train_y_norm = (train_y - action_mean) / action_std
+    test_y_norm = (test_y - action_mean) / action_std
+
+    stats = {
+        "obs_mean": obs_mean.reshape(-1).tolist(),
+        "obs_std": obs_std.reshape(-1).tolist(),
+        "action_mean": action_mean.reshape(-1).tolist(),
+        "action_std": action_std.reshape(-1).tolist(),
+    }
+    return train_x_norm, train_y_norm, test_x_norm, test_y_norm, stats
+
+
 def load_robomimic_data(
     data_dir,
     num_clients,
@@ -160,6 +185,12 @@ def load_robomimic_data(
             max_demos_per_task,
             seed + task_id,
         )
+        train_x, train_y, test_x, test_y, normalization_stats = _normalize_task_arrays(
+            train_x,
+            train_y,
+            test_x,
+            test_y,
+        )
 
         action_dim = 1 if train_y.ndim == 1 else train_y.shape[-1]
         tasks.append({
@@ -172,6 +203,7 @@ def load_robomimic_data(
             "success_threshold": float(success_threshold),
             "source_file": str(path),
             "obs_keys": selected_obs_keys,
+            "normalization": normalization_stats,
         })
 
         test_datasets[task_id] = MultiTaskDataset(

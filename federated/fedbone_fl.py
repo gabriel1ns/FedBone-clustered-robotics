@@ -68,6 +68,17 @@ def calculate_regression_metrics(y_true, y_pred):
     return {'mae': mae, 'rmse': rmse, 'r2': r2}
 
 
+def denormalize_regression_values(values, task_info):
+    normalization = task_info.get('normalization') if task_info else None
+    if not normalization:
+        return values
+
+    array = np.asarray(values, dtype=np.float32)
+    action_mean = np.asarray(normalization['action_mean'], dtype=np.float32)
+    action_std = np.asarray(normalization['action_std'], dtype=np.float32)
+    return array * action_std + action_mean
+
+
 class FedBoneClientTrainer:
     """Handles client-side training in split learning setup"""
     def __init__(self, client_id, client_model, train_dataset, device, 
@@ -412,14 +423,18 @@ def evaluate_fedbone(sample_client, server, test_loader, device, criterion,
             all_labels.extend(labels.cpu().numpy())
 
     if task_type == 'regression':
-        metrics = calculate_regression_metrics(all_labels, all_preds)
+        metric_labels = denormalize_regression_values(all_labels, task_info or {})
+        metric_preds = denormalize_regression_values(all_preds, task_info or {})
+        metrics = calculate_regression_metrics(metric_labels, metric_preds)
         metrics['accuracy'] = 0.0
         metrics['f1'] = 0.0
     else:
+        metric_labels = all_labels
+        metric_preds = all_preds
         metrics = calculate_metrics(all_labels, all_preds)
 
     metrics['loss'] = total_loss / max(num_batches, 1)
-    metrics['task_success_rate'] = compute_task_success(all_labels, all_preds, task_info or {})
+    metrics['task_success_rate'] = compute_task_success(metric_labels, metric_preds, task_info or {})
     if measure_latency:
         metrics['inference_latency_ms'] = measure_inference_latency(
             test_loader,

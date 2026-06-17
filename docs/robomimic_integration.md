@@ -21,6 +21,7 @@ data/robomimic/
   can/ph/low_dim.hdf5
   square/ph/low_dim.hdf5
   transport/ph/low_dim.hdf5
+  tool_hang/ph/low_dim.hdf5
 ```
 
 ## Downloading Datasets
@@ -37,16 +38,18 @@ Windows `cmd.exe` one-line command:
 hf download robomimic/robomimic_datasets v1.5/lift/ph/low_dim_v15.hdf5 v1.5/can/ph/low_dim_v15.hdf5 v1.5/square/ph/low_dim_v15.hdf5 --repo-type dataset --local-dir data/robomimic
 ```
 
-PowerShell multi-line command:
+PowerShell command for the current expanded `ph` scope:
 
 ```powershell
-hf download robomimic/robomimic_datasets `
-  v1.5/lift/ph/low_dim_v15.hdf5 `
-  v1.5/can/ph/low_dim_v15.hdf5 `
-  v1.5/square/ph/low_dim_v15.hdf5 `
-  --repo-type dataset `
-  --local-dir data/robomimic
+.\scripts\download_robomimic_lowdim.ps1 -Scope expanded-ph
 ```
+
+Available script scopes:
+
+- `core-ph`: Lift, Can, and Square with proficient-human demonstrations.
+- `expanded-ph`: `core-ph` plus Tool Hang and Transport.
+- `expanded-variants`: `expanded-ph` plus available `mh` / `mg`
+  variants for broader task and demonstration heterogeneity.
 
 The loader expects the standard RoboMimic HDF5 layout:
 
@@ -72,8 +75,10 @@ ROBOMIMIC_TEST_RATIO = 0.2
 ROBOMIMIC_SUCCESS_THRESHOLD = 0.05
 ```
 
-Leave `ROBOMIMIC_TASK_FILES` empty to discover all `.hdf5` / `.h5` files under
-`data/robomimic`. Set it explicitly to control task order or use only a subset.
+Leave `ROBOMIMIC_TASK_FILES` empty to discover all local `.hdf5` / `.h5` files
+under `data/robomimic`. The loader ignores Hugging Face `.cache` files to avoid
+training on duplicate downloads. Set `ROBOMIMIC_TASK_FILES` explicitly to
+control task order or use only a subset.
 
 Set `ROBOMIMIC_OBS_KEYS` when auto-detection picks the wrong low-dimensional
 keys.
@@ -81,6 +86,8 @@ keys.
 ## FedBone Mapping
 
 - Task: one RoboMimic HDF5 file, such as Lift or Can.
+- Expanded task names include the demonstration type, such as `can_ph` or
+  `can_mh`, so per-task metrics remain distinct when variants are used.
 - Client: one robot-task shard.
 - Input: flattened low-dimensional observations.
 - Target: action vector from demonstrations.

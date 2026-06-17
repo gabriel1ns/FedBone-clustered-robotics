@@ -15,7 +15,12 @@ def _discover_hdf5_files(data_dir: Path, task_files: Sequence[str]) -> List[Path
         files = [Path(path) for path in task_files]
         return [path if path.is_absolute() else data_dir / path for path in files]
 
-    files = sorted(data_dir.rglob("*.hdf5")) + sorted(data_dir.rglob("*.h5"))
+    files = [
+        path for pattern in ("*.hdf5", "*.h5")
+        for path in data_dir.rglob(pattern)
+        if ".cache" not in path.parts
+    ]
+    files = sorted(files)
     if not files:
         raise FileNotFoundError(
             f"No RoboMimic HDF5 files found under {data_dir}. "
@@ -27,7 +32,7 @@ def _discover_hdf5_files(data_dir: Path, task_files: Sequence[str]) -> List[Path
 def _task_name_from_path(path: Path) -> str:
     # Common RoboMimic paths look like task/demo_type/low_dim.hdf5.
     if path.parent.name in {"ph", "mh", "mg"} and path.parent.parent.name:
-        return path.parent.parent.name
+        return f"{path.parent.parent.name}_{path.parent.name}"
     if path.stem.startswith("low_dim") and path.parent.name:
         return path.parent.name
     return path.stem

@@ -116,7 +116,7 @@ Executar FedBone:
 python runner/run_fedbone.py
 ```
 
-Para usar RoboMimic, coloque datasets `low_dim.hdf5` em `data/robomimic/`, ajuste `DATASET = "robomimic"` em `config/config.py` e execute o mesmo runner.
+Para usar RoboMimic, coloque datasets `low_dim.hdf5` em `data/robomimic/`, ajuste `DATASET = "robomimic"` em `config/config.py` e execute o mesmo runner. Para aumentar o escopo experimental, use `.\scripts\download_robomimic_lowdim.ps1 -Scope expanded-ph`, que adiciona Lift, Can, Square, Tool Hang e Transport no protocolo low_dim.
 
 Gerar visualizações:
 ```python

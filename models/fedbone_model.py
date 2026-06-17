@@ -146,7 +146,7 @@ class TaskHead(nn.Module):
             self.head = nn.Sequential(
                 nn.Linear(hidden_size, hidden_size // 2),
                 nn.GELU(),
-                nn.Linear(hidden_size // 2, 1)
+                nn.Linear(hidden_size // 2, num_classes)
             )
         
     def forward(self, x):

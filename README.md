@@ -1,6 +1,6 @@
 # FedBone-Robotics
 
-Implementação de Federated Learning multi-tarefa para sistemas robóticos em nuvem. O projeto combina **Clustered FL** e **FedBone** (split learning com projeção de gradientes) usando o dataset UCI HAR como proxy de dados sensoriais robóticos.
+Implementação de Federated Learning multi-tarefa para sistemas robóticos em nuvem. O projeto combina **Clustered FL** e **FedBone** (split learning com projeção de gradientes) usando o dataset UCI HAR como proxy inicial e RoboMimic como dataset robótico offline para imitation learning multi-tarefa.
 
 ---
 
@@ -38,6 +38,9 @@ O fluxo por round é:
 
 O documento [docs/fedbone_robotics_overview.md](docs/fedbone_robotics_overview.md) resume o artigo FedBone e adapta a proposta para o contexto de robótica em nuvem, incluindo as métricas do artigo e as métricas adicionais necessárias para avaliar sistemas robóticos.
 
+RoboMimic é usado como dataset robótico offline: o loader lê demonstrações HDF5, transforma observações low-dimensional em entradas e ações demonstradas em alvos de regressão.
+Veja [docs/robomimic_integration.md](docs/robomimic_integration.md) para o formato esperado e configuração.
+
 ---
 
 ## Métricas Robóticas
@@ -67,7 +70,8 @@ FedBone-robotics/
 ├── data/
 │   ├── download_har.py         # Download do UCI HAR Dataset
 │   ├── dataset_loader.py       # Split não-IID via distribuição Dirichlet
-│   └── multitask_loader.py     # Criação de múltiplas tarefas a partir do HAR
+│   ├── multitask_loader.py     # Criação de múltiplas tarefas a partir do HAR
+│   └── robomimic_loader.py     # Loader HDF5 RoboMimic para FedBone
 ├── models/
 │   ├── model.py                # Modelo LSTM baseline
 │   └── fedbone_model.py        # Arquitetura FedBone (cliente e servidor)
@@ -112,6 +116,8 @@ Executar FedBone:
 python runner/run_fedbone.py
 ```
 
+Para usar RoboMimic, coloque datasets `low_dim.hdf5` em `data/robomimic/`, ajuste `DATASET = "robomimic"` em `config/config.py` e execute o mesmo runner.
+
 Gerar visualizações:
 ```python
 from utils.fedbone_visualization import create_all_fedbone_plots
@@ -138,6 +144,9 @@ Os principais parâmetros estão em `config/config.py`:
 | `EMBED_DIM` | 64 | Dimensão do embedding no cliente |
 | `GENERAL_HIDDEN` | 128 | Hidden size do General Model no servidor |
 | `USE_GP_AGGREGATION` | True | Habilitar GP Aggregation no FedBone |
+| `RUN_FEDBONE_ABLATIONS` | True | Rodar FedBone sem GP vs com GP no mesmo protocolo |
+| `DATASET` | robomimic | `har` ou `robomimic` |
+| `ROBOMIMIC_DATA_DIR` | data/robomimic | Diretório com arquivos HDF5 RoboMimic |
 
 ---
 

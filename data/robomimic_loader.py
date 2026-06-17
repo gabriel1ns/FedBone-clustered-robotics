@@ -1,0 +1,199 @@
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
+
+import h5py
+import numpy as np
+
+from data.multitask_loader import MultiTaskDataset
+
+
+IMAGE_LIKE_SUFFIXES = ("image", "rgb", "depth", "segmentation")
+
+
+def _discover_hdf5_files(data_dir: Path, task_files: Sequence[str]) -> List[Path]:
+    if task_files:
+        files = [Path(path) for path in task_files]
+        return [path if path.is_absolute() else data_dir / path for path in files]
+
+    files = sorted(data_dir.rglob("*.hdf5")) + sorted(data_dir.rglob("*.h5"))
+    if not files:
+        raise FileNotFoundError(
+            f"No RoboMimic HDF5 files found under {data_dir}. "
+            "Place low_dim datasets there or set ROBOMIMIC_TASK_FILES."
+        )
+    return files
+
+
+def _task_name_from_path(path: Path) -> str:
+    # Common RoboMimic paths look like task/demo_type/low_dim.hdf5.
+    if path.parent.name in {"ph", "mh", "mg"} and path.parent.parent.name:
+        return path.parent.parent.name
+    if path.stem.startswith("low_dim") and path.parent.name:
+        return path.parent.name
+    return path.stem
+
+
+def _demo_keys(handle, max_demos: int) -> List[str]:
+    keys = sorted(handle["data"].keys(), key=lambda value: int(value.split("_")[-1]))
+    if max_demos > 0:
+        keys = keys[:max_demos]
+    return keys
+
+
+def _is_low_dim_obs(name: str, dataset) -> bool:
+    lowered = name.lower()
+    if any(suffix in lowered for suffix in IMAGE_LIKE_SUFFIXES):
+        return False
+    if not np.issubdtype(dataset.dtype, np.number):
+        return False
+    return dataset.ndim <= 2
+
+
+def _infer_obs_keys(handle, demo_key: str, requested_keys: Sequence[str]) -> List[str]:
+    obs_group = handle["data"][demo_key]["obs"]
+    if requested_keys:
+        missing = [key for key in requested_keys if key not in obs_group]
+        if missing:
+            raise KeyError(f"Missing RoboMimic obs keys in {demo_key}: {missing}")
+        return list(requested_keys)
+
+    keys = [
+        key for key, value in obs_group.items()
+        if _is_low_dim_obs(key, value)
+    ]
+    if not keys:
+        available = ", ".join(obs_group.keys())
+        raise ValueError(
+            "Could not infer low-dimensional RoboMimic obs keys. "
+            f"Available keys: {available}. Set ROBOMIMIC_OBS_KEYS explicitly."
+        )
+    return sorted(keys)
+
+
+def _flatten_obs(obs_group, obs_keys: Sequence[str]) -> np.ndarray:
+    parts = []
+    for key in obs_keys:
+        values = np.asarray(obs_group[key], dtype=np.float32)
+        if values.ndim == 1:
+            values = values[:, None]
+        parts.append(values.reshape(values.shape[0], -1))
+    return np.concatenate(parts, axis=-1)
+
+
+def _load_demo(handle, demo_key: str, obs_keys: Sequence[str]) -> Tuple[np.ndarray, np.ndarray]:
+    demo = handle["data"][demo_key]
+    observations = _flatten_obs(demo["obs"], obs_keys)
+    actions = np.asarray(demo["actions"], dtype=np.float32)
+    length = min(len(observations), len(actions))
+    return observations[:length], actions[:length]
+
+
+def _stack_demos(items: Sequence[Tuple[np.ndarray, np.ndarray]]) -> Tuple[np.ndarray, np.ndarray]:
+    observations = np.concatenate([item[0] for item in items], axis=0)
+    actions = np.concatenate([item[1] for item in items], axis=0)
+    return observations[:, None, :], actions
+
+
+def _split_demo_keys(keys: Sequence[str], test_ratio: float, seed: int):
+    rng = np.random.default_rng(seed)
+    shuffled = list(keys)
+    rng.shuffle(shuffled)
+    split = max(1, int(len(shuffled) * (1.0 - test_ratio)))
+    train_keys = shuffled[:split]
+    test_keys = shuffled[split:] if split < len(shuffled) else shuffled[-1:]
+    return train_keys, test_keys
+
+
+def _load_task_file(path: Path, obs_keys, test_ratio, max_demos, seed):
+    with h5py.File(path, "r") as handle:
+        if "data" not in handle:
+            raise KeyError(f"{path} is not a RoboMimic-style HDF5 file: missing /data.")
+        keys = _demo_keys(handle, max_demos)
+        if not keys:
+            raise ValueError(f"{path} has no demonstrations under /data.")
+
+        selected_obs_keys = _infer_obs_keys(handle, keys[0], obs_keys)
+        train_keys, test_keys = _split_demo_keys(keys, test_ratio, seed)
+        train_items = [_load_demo(handle, key, selected_obs_keys) for key in train_keys]
+        test_items = [_load_demo(handle, key, selected_obs_keys) for key in test_keys]
+
+    train_x, train_y = _stack_demos(train_items)
+    test_x, test_y = _stack_demos(test_items)
+    return train_x, train_y, test_x, test_y, selected_obs_keys
+
+
+def load_robomimic_data(
+    data_dir,
+    num_clients,
+    task_files=None,
+    obs_keys=None,
+    test_ratio=0.2,
+    max_demos_per_task=0,
+    seed=42,
+    success_threshold=0.05,
+):
+    """
+    Load RoboMimic low-dimensional HDF5 datasets for FedBone.
+
+    Each HDF5 file is treated as one manipulation task. The loader reads
+    /data/demo_*/obs/<low_dim_keys> as inputs and /data/demo_*/actions as
+    action-regression targets.
+    """
+    data_dir = Path(data_dir)
+    files = _discover_hdf5_files(data_dir, task_files or [])
+
+    client_datasets = [[] for _ in range(num_clients)]
+    test_datasets: Dict[int, MultiTaskDataset] = {}
+    tasks = []
+
+    for task_id, path in enumerate(files):
+        task_name = _task_name_from_path(path)
+        train_x, train_y, test_x, test_y, selected_obs_keys = _load_task_file(
+            path,
+            obs_keys or [],
+            test_ratio,
+            max_demos_per_task,
+            seed + task_id,
+        )
+
+        action_dim = 1 if train_y.ndim == 1 else train_y.shape[-1]
+        tasks.append({
+            "task_id": task_id,
+            "name": task_name,
+            "description": f"RoboMimic imitation task from {path.name}",
+            "type": "regression",
+            "num_classes": int(action_dim),
+            "success_mapping": None,
+            "success_threshold": float(success_threshold),
+            "source_file": str(path),
+            "obs_keys": selected_obs_keys,
+        })
+
+        test_datasets[task_id] = MultiTaskDataset(
+            test_x,
+            test_y,
+            task_type="regression",
+            task_id=task_id,
+        )
+
+        shards = np.array_split(np.arange(len(train_x)), num_clients)
+        for client_id, shard in enumerate(shards):
+            if len(shard) == 0:
+                continue
+            dataset = MultiTaskDataset(
+                train_x[shard],
+                train_y[shard],
+                task_type="regression",
+                task_id=task_id,
+            )
+            client_datasets[client_id].append({
+                "dataset": dataset,
+                "task_id": task_id,
+                "task_type": "regression",
+                "task_name": task_name,
+                "num_classes": int(action_dim),
+                "robot_id": client_id,
+                "environment_id": path.parent.name,
+            })
+
+    return client_datasets, test_datasets, tasks

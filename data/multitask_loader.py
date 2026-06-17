@@ -46,6 +46,7 @@ def create_multitask_split(X_train, y_train, num_tasks=3, task_configs=None):
                 'name': 'activity_classification',
                 'type': 'classification',
                 'classes': [0, 1, 2, 3, 4, 5],  # All 6 activities
+                'success_mapping': {0: 0, 1: 1, 2: 1, 3: 2, 4: 2, 5: 3},
                 'description': 'Full 6-class activity recognition'
             },
             {
@@ -53,18 +54,21 @@ def create_multitask_split(X_train, y_train, num_tasks=3, task_configs=None):
                 'type': 'classification',
                 'classes': [3, 4, 5, 0, 1, 2],  # Remap to binary
                 'binary_mapping': {3: 0, 4: 0, 5: 0, 0: 1, 1: 1, 2: 1},  # sitting/standing/laying vs walking activities
+                'success_mapping': {0: 0, 1: 1},
                 'description': 'Binary: stationary vs moving'
             },
             {
                 'name': 'walking_variants',
                 'type': 'classification',
                 'classes': [0, 1, 2],  # Only walking activities
+                'success_mapping': {0: 0, 1: 1, 2: 1},
                 'description': '3-class walking type classification'
             },
             {
                 'name': 'activity_intensity',
                 'type': 'regression',
                 'intensity_map': {0: 0.5, 1: 0.8, 2: 0.6, 3: 0.1, 4: 0.15, 5: 0.0},
+                'success_threshold': 0.15,
                 'description': 'Regression: predict activity intensity'
             }
         ]
@@ -115,7 +119,9 @@ def create_multitask_split(X_train, y_train, num_tasks=3, task_configs=None):
             'type': task_type,
             'num_classes': num_classes,
             'name': config['name'],
-            'description': config.get('description', '')
+            'description': config.get('description', ''),
+            'success_mapping': config.get('success_mapping'),
+            'success_threshold': config.get('success_threshold')
         })
     
     return tasks

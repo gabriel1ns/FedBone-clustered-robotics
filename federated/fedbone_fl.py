@@ -4,6 +4,8 @@ import torch.optim as optim
 from collections import OrderedDict
 from typing import List, Dict, Tuple
 import copy
+import math
+import numpy as np
 import sys
 sys.path.append('..')
 
@@ -17,6 +19,53 @@ from utils.robotics_metrics import (
     task_success_rate,
 )
 from data.dataset_loader import get_dataloader
+
+
+def get_task_criterion(task_type):
+    if task_type == 'regression':
+        return nn.MSELoss()
+    return nn.CrossEntropyLoss()
+
+
+def compute_task_success(y_true, y_pred, task_info):
+    task_type = task_info.get('type', 'classification') if task_info else 'classification'
+
+    if len(y_true) == 0:
+        return 0.0
+
+    if task_type == 'regression':
+        threshold = task_info.get('success_threshold', 0.15) if task_info else 0.15
+        true = np.asarray(y_true, dtype=np.float64)
+        pred = np.asarray(y_pred, dtype=np.float64)
+        errors = np.linalg.norm(true - pred, axis=-1) if true.ndim > 1 else np.abs(true - pred)
+        return float(np.mean(errors <= threshold))
+
+    success_mapping = task_info.get('success_mapping') if task_info else None
+    if success_mapping:
+        successes = [
+            success_mapping.get(int(true), int(true)) == success_mapping.get(int(pred), int(pred))
+            for true, pred in zip(y_true, y_pred)
+        ]
+        return sum(successes) / len(successes)
+
+    return task_success_rate(y_true, y_pred)
+
+
+def calculate_regression_metrics(y_true, y_pred):
+    if len(y_true) == 0:
+        return {'mae': 0.0, 'rmse': 0.0, 'r2': 0.0}
+
+    true = torch.tensor(np.asarray(y_true), dtype=torch.float32)
+    pred = torch.tensor(np.asarray(y_pred), dtype=torch.float32)
+    errors = pred - true
+    mae = torch.mean(torch.abs(errors)).item()
+    rmse = torch.sqrt(torch.mean(errors ** 2)).item()
+
+    total_var = torch.sum((true - torch.mean(true)) ** 2).item()
+    residual = torch.sum(errors ** 2).item()
+    r2 = 1.0 - residual / total_var if total_var > 0 else 0.0
+
+    return {'mae': mae, 'rmse': rmse, 'r2': r2}
 
 
 class FedBoneClientTrainer:
@@ -171,19 +220,20 @@ class FedBoneServer:
 
 
 def run_fedbone(clients, server, test_loader, device, num_rounds,
-                clients_per_round, use_gp_aggregation=True):
+                clients_per_round, use_gp_aggregation=True,
+                test_loaders_by_task=None, tasks_info=None):
 
     history = {
         'rounds': [], 'accuracy': [], 'f1': [],
         'loss': [], 'conflict_scores': [],
         'task_success_rate': [],
+        'mae': [], 'rmse': [], 'r2': [],
+        'per_task_metrics': [],
         'inference_latency_ms': [],
         'communication_bytes_per_round': [],
         'communication_mb_per_round': [],
         'communication_breakdown': [],
     }
-
-    criterion = nn.CrossEntropyLoss()
 
     print("\n" + "="*80)
     print("FEDBONE TRAINING")
@@ -222,6 +272,7 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
                 for batch_x, batch_y in client.train_loader:
                     batch_x = batch_x.to(device)
                     batch_y = batch_y.to(device)
+                    criterion = get_task_criterion(client.task_type)
 
                     client_optimizer.zero_grad()
 
@@ -230,6 +281,10 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
                     general_features = client_server_model(embeddings)
                     communication_meter.record_split_batch(embeddings, general_features)
                     outputs = client.client_model(None, general_features=general_features)
+
+                    if client.task_type == 'regression' and outputs.shape[-1] == 1:
+                        outputs = outputs.squeeze(-1)
+                        batch_y = batch_y.float()
 
                     loss = criterion(outputs, batch_y)
                     loss.backward()
@@ -256,14 +311,25 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
         )
 
         avg_loss = sum(round_losses) / len(round_losses)
-        metrics = evaluate_fedbone(
-            clients[0],
-            server,
-            test_loader,
-            device,
-            criterion,
-            measure_latency=True,
-        )
+        if test_loaders_by_task is not None:
+            metrics = evaluate_fedbone_multitask(
+                clients,
+                server,
+                test_loaders_by_task,
+                device,
+                tasks_info,
+                measure_latency=True,
+            )
+        else:
+            metrics = evaluate_fedbone(
+                clients[0],
+                server,
+                test_loader,
+                device,
+                get_task_criterion(clients[0].task_type),
+                measure_latency=True,
+                task_info=tasks_info[0] if tasks_info else None,
+            )
         communication_summary = communication_meter.summary()
 
         history['rounds'].append(round_num + 1)
@@ -272,25 +338,42 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
         history['loss'].append(avg_loss)
         history['conflict_scores'].append(conflict_score)
         history['task_success_rate'].append(metrics['task_success_rate'])
+        history['mae'].append(metrics.get('mae'))
+        history['rmse'].append(metrics.get('rmse'))
+        history['r2'].append(metrics.get('r2'))
+        history['per_task_metrics'].append(metrics.get('per_task_metrics', {}))
         history['inference_latency_ms'].append(metrics['inference_latency_ms'])
         history['communication_bytes_per_round'].append(communication_summary['total_bytes'])
         history['communication_mb_per_round'].append(communication_summary['total_mb'])
         history['communication_breakdown'].append(communication_summary)
 
         print(f"\nRound {round_num + 1} Results:")
-        print(f"  Accuracy: {metrics['accuracy']:.4f}")
-        print(f"  F1-Score: {metrics['f1']:.4f}")
+        if metrics.get('accuracy') is not None:
+            print(f"  Accuracy: {metrics['accuracy']:.4f}")
+            print(f"  F1-Score: {metrics['f1']:.4f}")
+        if metrics.get('mae') is not None:
+            print(f"  MAE: {metrics['mae']:.4f}")
+            print(f"  RMSE: {metrics['rmse']:.4f}")
+            print(f"  R2: {metrics['r2']:.4f}")
         print(f"  Task Success Rate: {metrics['task_success_rate']:.4f}")
         print(f"  Loss: {avg_loss:.4f}")
         print(f"  Gradient Conflict: {conflict_score:.4f}")
         print(f"  Inference Latency: {metrics['inference_latency_ms']['mean_ms']:.2f} ms")
         print(f"  Communication: {communication_summary['total_mb']:.2f} MB")
 
-    history['rounds_to_convergence'] = rounds_to_convergence(history['accuracy'])
+    accuracy_values = [value for value in history['accuracy'] if value is not None]
+    rmse_values = [value for value in history['rmse'] if value is not None]
+    if accuracy_values:
+        history['rounds_to_convergence'] = rounds_to_convergence(history['accuracy'])
+    elif rmse_values:
+        history['rounds_to_convergence'] = rounds_to_convergence(history['rmse'], mode="min")
+    else:
+        history['rounds_to_convergence'] = None
     return history
 
 
-def evaluate_fedbone(sample_client, server, test_loader, device, criterion, measure_latency=False):
+def evaluate_fedbone(sample_client, server, test_loader, device, criterion,
+                     measure_latency=False, task_info=None):
     sample_client.client_model.eval()
     server.server_model.eval()
 
@@ -298,6 +381,7 @@ def evaluate_fedbone(sample_client, server, test_loader, device, criterion, meas
     all_labels = []
     total_loss = 0
     num_batches = 0
+    task_type = sample_client.task_type
 
     with torch.no_grad():
         for sequences, labels in test_loader:
@@ -309,18 +393,33 @@ def evaluate_fedbone(sample_client, server, test_loader, device, criterion, meas
             outputs = sample_client.client_model(None, general_features=general_features)
 
             try:
+                if task_type == 'regression' and outputs.shape[-1] == 1:
+                    outputs = outputs.squeeze(-1)
+                if task_type == 'regression':
+                    labels = labels.float()
                 loss = criterion(outputs, labels)
                 total_loss += loss.item()
             except Exception:
                 pass
 
             num_batches += 1
-            _, preds = torch.max(outputs, 1)
+            if task_type == 'regression':
+                preds = outputs
+            else:
+                _, preds = torch.max(outputs, 1)
+
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-    metrics = calculate_metrics(all_labels, all_preds)
-    metrics['task_success_rate'] = task_success_rate(all_labels, all_preds)
+    if task_type == 'regression':
+        metrics = calculate_regression_metrics(all_labels, all_preds)
+        metrics['accuracy'] = 0.0
+        metrics['f1'] = 0.0
+    else:
+        metrics = calculate_metrics(all_labels, all_preds)
+
+    metrics['loss'] = total_loss / max(num_batches, 1)
+    metrics['task_success_rate'] = compute_task_success(all_labels, all_preds, task_info or {})
     if measure_latency:
         metrics['inference_latency_ms'] = measure_inference_latency(
             test_loader,
@@ -335,3 +434,61 @@ def evaluate_fedbone(sample_client, server, test_loader, device, criterion, meas
     else:
         metrics['inference_latency_ms'] = {"mean_ms": 0.0, "median_ms": 0.0, "p95_ms": 0.0}
     return metrics
+
+
+def evaluate_fedbone_multitask(clients, server, test_loaders_by_task, device,
+                               tasks_info=None, measure_latency=False):
+    per_task_metrics = {}
+    classification_accuracy = []
+    classification_f1 = []
+    regression_mae = []
+    regression_rmse = []
+    regression_r2 = []
+    task_success_values = []
+    latency_values = []
+
+    for task_id, test_loader in test_loaders_by_task.items():
+        task_info = tasks_info[task_id] if tasks_info else {}
+        matching_clients = [client for client in clients if getattr(client, 'task_id', None) == task_id]
+        if not matching_clients:
+            continue
+
+        task_metrics = evaluate_fedbone(
+            matching_clients[0],
+            server,
+            test_loader,
+            device,
+            get_task_criterion(task_info.get('type', 'classification')),
+            measure_latency=measure_latency,
+            task_info=task_info,
+        )
+
+        task_name = task_info.get('name', str(task_id))
+        per_task_metrics[task_name] = task_metrics
+        task_success_values.append(task_metrics['task_success_rate'])
+        latency_values.append(task_metrics['inference_latency_ms']['mean_ms'])
+
+        if task_info.get('type', 'classification') == 'classification':
+            classification_accuracy.append(task_metrics['accuracy'])
+            classification_f1.append(task_metrics['f1'])
+        elif task_info.get('type') == 'regression':
+            regression_mae.append(task_metrics['mae'])
+            regression_rmse.append(task_metrics['rmse'])
+            regression_r2.append(task_metrics['r2'])
+
+    mean_latency = sum(latency_values) / len(latency_values) if latency_values else 0.0
+
+    return {
+        'accuracy': sum(classification_accuracy) / len(classification_accuracy) if classification_accuracy else None,
+        'f1': sum(classification_f1) / len(classification_f1) if classification_f1 else None,
+        'mae': sum(regression_mae) / len(regression_mae) if regression_mae else None,
+        'rmse': sum(regression_rmse) / len(regression_rmse) if regression_rmse else None,
+        'r2': sum(regression_r2) / len(regression_r2) if regression_r2 else None,
+        'task_success_rate': sum(task_success_values) / len(task_success_values) if task_success_values else 0.0,
+        'inference_latency_ms': {
+            'mean_ms': mean_latency,
+            'median_ms': mean_latency,
+            'p95_ms': max(latency_values) if latency_values else 0.0,
+        },
+        'per_task_metrics': per_task_metrics,
+    }

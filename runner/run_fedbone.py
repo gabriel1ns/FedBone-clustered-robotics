@@ -6,10 +6,86 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from config import config
 from data.multitask_loader import load_multitask_data
+from data.robomimic_loader import load_robomimic_data
 from data.dataset_loader import get_dataloader
 from models.fedbone_model import create_fedbone_client, create_fedbone_server, count_parameters
 from federated.fedbone_fl import FedBoneClientTrainer, FedBoneServer, run_fedbone
 from utils.utils import set_seed, get_device, save_results
+
+
+def build_fedbone_clients(client_datasets, device, embed_dim, hidden_size):
+    clients = []
+    virtual_client_id = 0
+    client_params = 0
+
+    for robot_id, client_task_datasets in enumerate(client_datasets):
+        if len(client_task_datasets) == 0:
+            continue
+
+        for task_dataset in client_task_datasets:
+            num_features = int(task_dataset['dataset'].sequences.shape[-1])
+            client_model = create_fedbone_client(
+                num_features=num_features,
+                embed_dim=embed_dim,
+                hidden_size=hidden_size,
+                num_classes=task_dataset['num_classes'],
+                task_type=task_dataset['task_type']
+            )
+
+            client = FedBoneClientTrainer(
+                client_id=virtual_client_id,
+                client_model=client_model,
+                train_dataset=task_dataset['dataset'],
+                device=device,
+                batch_size=config.BATCH_SIZE,
+                learning_rate=config.LEARNING_RATE,
+                local_epochs=config.LOCAL_EPOCHS,
+                task_type=task_dataset['task_type']
+            )
+            client.robot_id = task_dataset.get('robot_id', robot_id)
+            client.task_id = task_dataset['task_id']
+            client.task_name = task_dataset['task_name']
+
+            clients.append(client)
+            virtual_client_id += 1
+            client_params = count_parameters(client_model)
+
+    return clients, client_params
+
+
+def build_test_loaders(test_datasets):
+    return {
+        task_id: get_dataloader(dataset, config.BATCH_SIZE, shuffle=False)
+        for task_id, dataset in test_datasets.items()
+    }
+
+
+def load_configured_multitask_data():
+    if config.DATASET.lower() == "robomimic":
+        client_datasets, test_datasets, tasks = load_robomimic_data(
+            data_dir=config.ROBOMIMIC_DATA_DIR,
+            num_clients=config.NUM_ROBOTS,
+            task_files=config.ROBOMIMIC_TASK_FILES,
+            obs_keys=config.ROBOMIMIC_OBS_KEYS,
+            test_ratio=config.ROBOMIMIC_TEST_RATIO,
+            max_demos_per_task=config.ROBOMIMIC_MAX_DEMOS_PER_TASK,
+            seed=config.SEED,
+            success_threshold=config.ROBOMIMIC_SUCCESS_THRESHOLD,
+        )
+        for client_task_datasets in client_datasets:
+            if client_task_datasets:
+                sample_dataset = client_task_datasets[0]["dataset"]
+                config.NUM_FEATURES = int(sample_dataset.sequences.shape[-1])
+                break
+        return client_datasets, test_datasets, tasks
+
+    return load_multitask_data(
+        data_dir=config.DATA_DIR,
+        num_clients=config.NUM_ROBOTS,
+        num_tasks=config.NUM_TASKS,
+        task_distribution=config.TASK_DISTRIBUTION,
+        alpha=config.ALPHA
+    )
 
 
 def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
@@ -38,42 +114,14 @@ def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
     print(f"  Server (General Model) parameters: {server_params:,}")
     
     print("\n[2/4] Creating client models...")
-    clients = []
-    
-    for client_id, client_task_datasets in enumerate(client_datasets):
-        # For simplicity, use the first task of each client for training
-        # In full implementation, would handle multiple tasks per client
-        
-        if len(client_task_datasets) == 0:
-            continue
-        
-        # Use primary task (first one)
-        primary_task = client_task_datasets[0]
-        
-        client_model = create_fedbone_client(
-            num_features=config.NUM_FEATURES,
-            embed_dim=EMBED_DIM,
-            hidden_size=HIDDEN_SIZE,
-            num_classes=primary_task['num_classes'],
-            task_type=primary_task['task_type']
-        )
-        
-        client = FedBoneClientTrainer(
-            client_id=client_id,
-            client_model=client_model,
-            train_dataset=primary_task['dataset'],
-            device=device,
-            batch_size=config.BATCH_SIZE,
-            learning_rate=config.LEARNING_RATE,
-            local_epochs=config.LOCAL_EPOCHS,
-            task_type=primary_task['task_type']
-        )
-        
-        clients.append(client)
-    
-    client_params = count_parameters(clients[0].client_model)
+    clients, client_params = build_fedbone_clients(
+        client_datasets,
+        device,
+        EMBED_DIM,
+        HIDDEN_SIZE,
+    )
     print(f"  Client model parameters (each): {client_params:,}")
-    print(f"  Created {len(clients)} clients with heterogeneous tasks")
+    print(f"  Created {len(clients)} robot-task clients with heterogeneous tasks")
     
     print("\n[3/4] Initializing FedBone server...")
     server = FedBoneServer(
@@ -83,10 +131,9 @@ def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
         embed_dim=EMBED_DIM
     )
     
-    # Use first task's test set for evaluation
-    client_0_task_id = client_datasets[0][0]['task_id']
-    primary_test_task = test_datasets[client_0_task_id]
-    test_loader = get_dataloader(primary_test_task, config.BATCH_SIZE, shuffle=False)
+    test_loaders_by_task = build_test_loaders(test_datasets)
+    first_task_id = sorted(test_datasets.keys())[0]
+    test_loader = test_loaders_by_task[first_task_id]
     
     print("\n[4/4] Running FedBone training...")
     print(f"  Number of rounds: {config.NUM_ROUNDS}")
@@ -102,7 +149,9 @@ def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
         device=device,
         num_rounds=config.NUM_ROUNDS,
         clients_per_round=min(config.CLIENTS_PER_ROUND, len(clients)),
-        use_gp_aggregation=True
+        use_gp_aggregation=True,
+        test_loaders_by_task=test_loaders_by_task,
+        tasks_info=tasks
     )
     
     # Save results
@@ -127,7 +176,9 @@ def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
                 "task_id": i,
                 "name": task['name'],
                 "type": task['type'],
-                "num_classes": task['num_classes']
+                "num_classes": task['num_classes'],
+                "success_mapping": task.get('success_mapping'),
+                "success_threshold": task.get('success_threshold')
             }
             for i, task in enumerate(tasks)
         ],
@@ -136,12 +187,18 @@ def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
     
     results_path = config.RESULTS_DIR / "fedbone_multitask_results.json"
     save_results(results, results_path)
-    print(f"\n✓ Results saved to: {results_path}")
+    print(f"\nOK Results saved to: {results_path}")
     
-    if len(history_gp['accuracy']) > 0:
+    if len(history_gp['rounds']) > 0:
         print("\nFinal Results (with GP Aggregation):")
-        print(f"  Accuracy: {history_gp['accuracy'][-1]:.4f}")
-        print(f"  F1-Score: {history_gp['f1'][-1]:.4f}")
+        if history_gp['accuracy'][-1] is not None:
+            print(f"  Macro Classification Accuracy: {history_gp['accuracy'][-1]:.4f}")
+            print(f"  Macro Classification F1-Score: {history_gp['f1'][-1]:.4f}")
+        if history_gp['mae'][-1] is not None:
+            print(f"  Macro MAE: {history_gp['mae'][-1]:.4f}")
+            print(f"  Macro RMSE: {history_gp['rmse'][-1]:.4f}")
+            print(f"  Macro R2: {history_gp['r2'][-1]:.4f}")
+        print(f"  Macro Task Success Rate: {history_gp['task_success_rate'][-1]:.4f}")
         print(f"  Loss: {history_gp['loss'][-1]:.4f}")
         print(f"  Avg Gradient Conflict: {sum(history_gp['conflict_scores'])/len(history_gp['conflict_scores']):.4f}")
     
@@ -170,33 +227,25 @@ def compare_gp_vs_baseline(client_datasets, test_datasets, tasks, device):
         # Create fresh models
         server_model = create_fedbone_server(EMBED_DIM, HIDDEN_SIZE, config.NUM_LAYERS, config.DROPOUT)
         
-        clients = []
-        for client_id, client_task_datasets in enumerate(client_datasets):
-            if len(client_task_datasets) == 0:
-                continue
-            
-            primary_task = client_task_datasets[0]
-            client_model = create_fedbone_client(
-                config.NUM_FEATURES, EMBED_DIM, HIDDEN_SIZE,
-                primary_task['num_classes'], primary_task['task_type']
-            )
-            
-            client = FedBoneClientTrainer(
-                client_id, client_model, primary_task['dataset'],
-                device, config.BATCH_SIZE, config.LEARNING_RATE,
-                config.LOCAL_EPOCHS, primary_task['task_type']
-            )
-            clients.append(client)
+        clients, _ = build_fedbone_clients(
+            client_datasets,
+            device,
+            EMBED_DIM,
+            HIDDEN_SIZE,
+        )
         
         server = FedBoneServer(server_model, device, len(clients), EMBED_DIM)
         
-        primary_test_task = list(test_datasets.values())[0]
-        test_loader = get_dataloader(primary_test_task, config.BATCH_SIZE, shuffle=False)
+        test_loaders_by_task = build_test_loaders(test_datasets)
+        first_task_id = sorted(test_datasets.keys())[0]
+        test_loader = test_loaders_by_task[first_task_id]
         
         history = run_fedbone(
             clients, server, test_loader, device,
             config.NUM_ROUNDS, min(config.CLIENTS_PER_ROUND, len(clients)),
-            use_gp_aggregation=use_gp
+            use_gp_aggregation=use_gp,
+            test_loaders_by_task=test_loaders_by_task,
+            tasks_info=tasks
         )
         
         results_comparison[exp_name] = history
@@ -215,17 +264,32 @@ def compare_gp_vs_baseline(client_datasets, test_datasets, tasks, device):
     print("COMPARISON RESULTS")
     print("="*80)
     print("\nBaseline (Simple Averaging):")
-    print(f"  Final Accuracy: {results_comparison['baseline']['accuracy'][-1]:.4f}")
-    print(f"  Final F1: {results_comparison['baseline']['f1'][-1]:.4f}")
+    if results_comparison['baseline']['accuracy'][-1] is not None:
+        print(f"  Final Macro Accuracy: {results_comparison['baseline']['accuracy'][-1]:.4f}")
+        print(f"  Final Macro F1: {results_comparison['baseline']['f1'][-1]:.4f}")
+    if results_comparison['baseline']['mae'][-1] is not None:
+        print(f"  Final Macro MAE: {results_comparison['baseline']['mae'][-1]:.4f}")
+        print(f"  Final Macro RMSE: {results_comparison['baseline']['rmse'][-1]:.4f}")
+    print(f"  Final Macro TSR: {results_comparison['baseline']['task_success_rate'][-1]:.4f}")
     
     print("\nGP Aggregation:")
-    print(f"  Final Accuracy: {results_comparison['gp_aggregation']['accuracy'][-1]:.4f}")
-    print(f"  Final F1: {results_comparison['gp_aggregation']['f1'][-1]:.4f}")
+    if results_comparison['gp_aggregation']['accuracy'][-1] is not None:
+        print(f"  Final Macro Accuracy: {results_comparison['gp_aggregation']['accuracy'][-1]:.4f}")
+        print(f"  Final Macro F1: {results_comparison['gp_aggregation']['f1'][-1]:.4f}")
+    if results_comparison['gp_aggregation']['mae'][-1] is not None:
+        print(f"  Final Macro MAE: {results_comparison['gp_aggregation']['mae'][-1]:.4f}")
+        print(f"  Final Macro RMSE: {results_comparison['gp_aggregation']['rmse'][-1]:.4f}")
+    print(f"  Final Macro TSR: {results_comparison['gp_aggregation']['task_success_rate'][-1]:.4f}")
     print(f"  Avg Conflict Score: {sum(results_comparison['gp_aggregation']['conflict_scores'])/len(results_comparison['gp_aggregation']['conflict_scores']):.4f}")
     
-    improvement = (results_comparison['gp_aggregation']['accuracy'][-1] - 
-                   results_comparison['baseline']['accuracy'][-1]) * 100
-    print(f"\n✓ Improvement: {improvement:+.2f}%")
+    if results_comparison['gp_aggregation']['accuracy'][-1] is not None:
+        improvement = (results_comparison['gp_aggregation']['accuracy'][-1] -
+                       results_comparison['baseline']['accuracy'][-1]) * 100
+        print(f"\nOK Accuracy Improvement: {improvement:+.2f}%")
+    elif results_comparison['gp_aggregation']['rmse'][-1] is not None:
+        improvement = (results_comparison['baseline']['rmse'][-1] -
+                       results_comparison['gp_aggregation']['rmse'][-1])
+        print(f"\nOK RMSE Reduction: {improvement:+.4f}")
     
     return comparison_results
 
@@ -240,22 +304,14 @@ def main():
     print(f"Using device: {device}")
     
     # Load multi-task data
-    print("\nLoading multi-task HAR dataset...")
-    client_datasets, test_datasets, tasks = load_multitask_data(
-        data_dir=config.DATA_DIR,
-        num_clients=config.NUM_ROBOTS,
-        num_tasks=3,  # 3 different tasks
-        task_distribution='mixed',  # Mix of specialized and generalist clients
-        alpha=config.ALPHA
-    )
+    print(f"\nLoading {config.DATASET.upper()} multi-task dataset...")
+    client_datasets, test_datasets, tasks = load_configured_multitask_data()
     
     # Run main experiment
     results = run_fedbone_experiment(client_datasets, test_datasets, tasks, device)
     
-    # Optional: Run comparison
-    print("\n" + "="*80)
-    print("Run GP Aggregation comparison? (y/n)")
-    # comparison = compare_gp_vs_baseline(client_datasets, test_datasets, tasks, device)
+    if config.RUN_FEDBONE_ABLATIONS:
+        compare_gp_vs_baseline(client_datasets, test_datasets, tasks, device)
     
     print("\n" + "="*80)
     print("EXPERIMENTS COMPLETED!")

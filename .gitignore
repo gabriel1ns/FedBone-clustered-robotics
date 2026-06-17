@@ -13,6 +13,8 @@ build/
 
 data/raw/*
 !data/raw/.gitkeep
+data/robomimic/*
+!data/robomimic/.gitkeep
 
 results/plots/*.png
 results/models/*.pth

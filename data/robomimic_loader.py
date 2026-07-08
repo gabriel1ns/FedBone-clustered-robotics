@@ -4,7 +4,7 @@ from typing import Dict, List, Sequence, Tuple
 import h5py
 import numpy as np
 
-from data.multitask_loader import MultiTaskDataset
+from data.datasets import RoboMimicTaskDataset
 
 
 IMAGE_LIKE_SUFFIXES = ("image", "rgb", "depth", "segmentation")
@@ -206,10 +206,9 @@ def load_robomimic_data(
             "normalization": normalization_stats,
         })
 
-        test_datasets[task_id] = MultiTaskDataset(
+        test_datasets[task_id] = RoboMimicTaskDataset(
             test_x,
             test_y,
-            task_type="regression",
             task_id=task_id,
         )
 
@@ -217,10 +216,9 @@ def load_robomimic_data(
         for client_id, shard in enumerate(shards):
             if len(shard) == 0:
                 continue
-            dataset = MultiTaskDataset(
+            dataset = RoboMimicTaskDataset(
                 train_x[shard],
                 train_y[shard],
-                task_type="regression",
                 task_id=task_id,
             )
             client_datasets[client_id].append({

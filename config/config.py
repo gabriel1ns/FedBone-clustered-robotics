@@ -1,27 +1,21 @@
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent
-DATA_DIR = ROOT_DIR / "data" / "raw"
 ROBOMIMIC_DATA_DIR = ROOT_DIR / "data" / "robomimic"
 RESULTS_DIR = ROOT_DIR / "results"
 
-for d in [DATA_DIR, ROBOMIMIC_DATA_DIR, RESULTS_DIR / "plots", RESULTS_DIR / "models", RESULTS_DIR / "logs"]:
+for d in [ROBOMIMIC_DATA_DIR, RESULTS_DIR / "plots", RESULTS_DIR / "models", RESULTS_DIR / "logs"]:
     d.mkdir(parents=True, exist_ok=True)
 
 
 NUM_ROBOTS = 10
-DATASET = "robomimic"  # "har" or "robomimic"
 SEQUENCE_LENGTH = 1
-NUM_FEATURES = 561 # HAR dataset features
-NUM_CLASSES = 6   # HAR dataset: walking, walking_upstairs, walking_downstairs, sitting, standing, laying
 ROBOMIMIC_TASK_FILES = []     # Empty discovers local *.hdf5 under data/robomimic, excluding .cache
 ROBOMIMIC_OBS_KEYS = []       # Empty auto-detects low-dimensional obs keys
 ROBOMIMIC_TEST_RATIO = 0.2
 ROBOMIMIC_MAX_DEMOS_PER_TASK = 0  # 0 means all demos
 ROBOMIMIC_SUCCESS_THRESHOLD = 0.75
-ALPHA = 0.5       # Dirichlet alpha for non-IID (lower = more heterogeneous)
-
-# LSTM baseline
+# LSTM baselines
 HIDDEN_SIZE = 128
 NUM_LAYERS = 2
 DROPOUT = 0.3
@@ -35,7 +29,7 @@ BATCH_SIZE = 64
 LOCAL_EPOCHS = 2
 LEARNING_RATE = 0.0005
 
-NUM_ROUNDS = 30
+NUM_ROUNDS = 50
 CLIENTS_PER_ROUND = 10
 
 NUM_CLUSTERS = 3
@@ -47,9 +41,6 @@ USE_GP_AGGREGATION = True     # Use Gradient Projection aggregation
 USE_TASK_ADAPTATION = True    # Use task adaptation module
 RUN_FEDBONE_ABLATIONS = True  # Compare FedBone simple averaging vs GP Aggregation
 
-
-NUM_TASKS = 4                 # Number of different tasks
-TASK_DISTRIBUTION = "mixed"   # "uniform", "specialized", or "mixed"
 
 SEED = 42
 DEVICE = "cuda"  # "cuda" or "cpu"

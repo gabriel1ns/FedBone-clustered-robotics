@@ -15,12 +15,13 @@ from utils.utils import get_device, save_results, set_seed
 
 
 ROBOSUITE_TASKS = {
-    "lift_ph": ("Lift", "Panda"),
-    "can_ph": ("PickPlaceCan", "Panda"),
-    "square_ph": ("NutAssemblySquare", "Panda"),
-    "tool_hang_ph": ("ToolHang", "Panda"),
-    "transport_ph": ("TwoArmTransport", "Panda"),
+    "lift": ("Lift", "Panda"),
+    "can": ("PickPlaceCan", "Panda"),
+    "square": ("NutAssemblySquare", "Panda"),
+    "tool_hang": ("ToolHang", "Panda"),
+    "transport": ("TwoArmTransport", ["Panda", "Panda"]),
 }
+DEMO_VARIANTS = {"ph", "mh", "mg"}
 
 OBS_KEY_ALIASES = {
     "object": "object-state",
@@ -99,6 +100,19 @@ def denormalize_action(action, task):
     return action * std + mean
 
 
+def base_task_name(task_name):
+    """Remove the RoboMimic demonstration suffix without breaking tool_hang."""
+    parts = task_name.lower().split("_")
+    if parts and parts[-1] in DEMO_VARIANTS:
+        parts.pop()
+    return "_".join(parts)
+
+
+def available_checkpoint_tasks(checkpoint_path, device="cpu"):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    return [task["name"] for task in checkpoint["tasks"]]
+
+
 def predict_action(client_model, server_model, obs_vector, task, device):
     model_input = normalize_observation(obs_vector, task)
     inputs = torch.tensor(model_input, dtype=torch.float32, device=device).view(1, 1, -1)
@@ -136,7 +150,7 @@ def make_env(suite, args, task):
         env_kwargs["horizon"] = args.horizon
         return env_name, env_kwargs.get("robots", args.robots), suite.make(env_name=env_name, **env_kwargs)
 
-    env_name, robots = ROBOSUITE_TASKS.get(args.task, (args.env_name, args.robots))
+    env_name, robots = ROBOSUITE_TASKS.get(base_task_name(args.task), (args.env_name, args.robots))
     if env_name is None:
         raise ValueError(f"No RoboSuite mapping for {args.task!r}. Pass --env-name and --robots.")
 
@@ -154,7 +168,7 @@ def make_env(suite, args, task):
     )
 
 
-def evaluate_online(args):
+def evaluate_task(args):
     import robosuite as suite
     import imageio.v2 as imageio
 
@@ -253,19 +267,66 @@ def evaluate_online(args):
         "episodes_detail": episode_results,
     }
 
+    return results
+
+
+def evaluate_online(args):
+    checkpoint_path = Path(args.checkpoint)
+    task_names = (
+        available_checkpoint_tasks(checkpoint_path)
+        if args.task.lower() == "all"
+        else [name.strip() for name in args.task.split(",") if name.strip()]
+    )
+    if not task_names:
+        raise ValueError("No online-evaluation tasks were selected.")
+
+    task_results = {}
+    for task_name in task_names:
+        print(f"\nEvaluating RoboMimic task: {task_name}")
+        task_args = argparse.Namespace(**vars(args))
+        task_args.task = task_name
+        task_args.record_video = video_path_for_task(args.record_video, task_name, len(task_names))
+        task_results[task_name] = evaluate_task(task_args)
+
+    if len(task_results) == 1:
+        results = next(iter(task_results.values()))
+    else:
+        results = {
+            "checkpoint": str(checkpoint_path),
+            "tasks": task_results,
+            "macro_success_rate": float(np.mean([
+                result["success_rate"] for result in task_results.values()
+            ])),
+            "macro_mean_return": float(np.mean([
+                result["mean_return"] for result in task_results.values()
+            ])),
+        }
+
     output_path = Path(args.output)
     save_results(results, output_path)
-    print(json.dumps({
-        k: results[k]
-        for k in ["task", "success_rate", "mean_return", "mean_steps", "obs_norm_mean", "action_stats"]
+    print(json.dumps(results if len(task_results) > 1 else {
+        key: results[key]
+        for key in ["task", "success_rate", "mean_return", "mean_steps", "obs_norm_mean", "action_stats"]
     }, indent=2))
     print(f"Online results saved to: {output_path}")
+    return results
+
+
+def video_path_for_task(path, task_name, multiple_tasks):
+    if not path or not multiple_tasks:
+        return path
+    video_path = Path(path)
+    return str(video_path.with_name(f"{video_path.stem}_{task_name}{video_path.suffix}"))
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate a trained FedBone policy online in RoboSuite.")
     parser.add_argument("--checkpoint", default=str(config.RESULTS_DIR / "models" / "fedbone_multitask_final.pth"))
-    parser.add_argument("--task", default="lift_ph")
+    parser.add_argument(
+        "--task",
+        default="all",
+        help="Checkpoint task name, comma-separated names, or 'all' (default).",
+    )
     parser.add_argument("--env-name", default=None)
     parser.add_argument("--robots", default="Panda")
     parser.add_argument("--episodes", type=int, default=10)

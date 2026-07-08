@@ -9,7 +9,7 @@ class LSTMModel(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         
-        #basic long short-term memory implementation
+        # Task-specific action-regression backbone for the FL baselines.
         self.lstm = nn.LSTM(
             input_size=num_features,
             hidden_size=hidden_size,

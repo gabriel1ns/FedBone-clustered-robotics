@@ -68,7 +68,6 @@ observation keys are flattened and concatenated.
 In `config/config.py`:
 
 ```python
-DATASET = "robomimic"
 ROBOMIMIC_TASK_FILES = []
 ROBOMIMIC_OBS_KEYS = []
 ROBOMIMIC_TEST_RATIO = 0.2
@@ -102,5 +101,27 @@ The FedBone runner compares:
 - FedBone with simple server-gradient averaging.
 - FedBone with GP Aggregation.
 
-FedAvg and Clustered FL should be adapted to this same action-regression
-protocol before final external baseline comparison.
+FedAvg and Clustered FL use this same normalized action-regression protocol.
+Because tasks have different observation and action dimensions, each baseline
+trains one federated model per task and reports both per-task and macro metrics.
+FedBone is the approach that additionally shares its server backbone across
+tasks.
+
+## Online evaluation
+
+Evaluate every RoboMimic task stored in a FedBone checkpoint:
+
+```powershell
+python runner/evaluate_online.py --task all --episodes 10
+```
+
+Use a single task or a comma-separated subset when needed:
+
+```powershell
+python runner/evaluate_online.py --task lift_ph,can_ph --episodes 10
+```
+
+The evaluator recognizes `ph`, `mh`, and `mg` variants of Lift, Can, Square,
+Tool Hang, and Transport. When multiple tasks are evaluated, the output JSON
+contains per-task results and macro success-rate / return summaries. If
+`--record-video` is set, the task name is appended to each video filename.

@@ -1,251 +1,260 @@
-import torch
+import copy
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).parent))
+import numpy as np
+import torch
+
+sys.path.append(str(Path(__file__).parent.parent))
 
 from config import config
-from data.dataset_loader import load_data_for_clients, get_dataloader
+from data.datasets import get_dataloader
+from data.robomimic_loader import load_robomimic_data
+from federated.robomimic_baselines import (
+    RoboMimicRegressionClient,
+    run_clustered_regression,
+    run_fedavg_regression,
+)
 from models.model import create_model
-from federated.baseline_fl import FlowerClient, run_fedavg
-from federated.clustered_fl import ClusteredFlowerClient, run_clustered_fl
-from utils.utils import set_seed, get_device, save_results
-from utils.robotics_metrics import rounds_to_convergence, state_dict_nbytes
+from utils.utils import get_device, save_results, set_seed
 
-def run_baseline_experiment(train_datasets, test_dataset, device):
-    print("\n" + "="*80)
-    print("EXPERIMENT 1: BASELINE FEDERATED LEARNING")
-    print("="*80)
-    
-    test_loader = get_dataloader(test_dataset, config.BATCH_SIZE, shuffle=False)
-    
-    print("\n[1/3] Creating global model...")
-    global_model = create_model(
-        num_features=config.NUM_FEATURES,
+
+def load_data():
+    return load_robomimic_data(
+        data_dir=config.ROBOMIMIC_DATA_DIR,
+        num_clients=config.NUM_ROBOTS,
+        task_files=config.ROBOMIMIC_TASK_FILES,
+        obs_keys=config.ROBOMIMIC_OBS_KEYS,
+        test_ratio=config.ROBOMIMIC_TEST_RATIO,
+        max_demos_per_task=config.ROBOMIMIC_MAX_DEMOS_PER_TASK,
+        seed=config.SEED,
+        success_threshold=config.ROBOMIMIC_SUCCESS_THRESHOLD,
+    )
+
+
+def task_client_datasets(client_datasets, task_id):
+    datasets = []
+    for robot_tasks in client_datasets:
+        match = next(
+            (entry["dataset"] for entry in robot_tasks if entry["task_id"] == task_id),
+            None,
+        )
+        if match is not None:
+            datasets.append(match)
+    return datasets
+
+
+def build_model(task_dataset, task_info):
+    return create_model(
+        num_features=int(task_dataset.sequences.shape[-1]),
         hidden_size=config.HIDDEN_SIZE,
         num_layers=config.NUM_LAYERS,
-        num_classes=config.NUM_CLASSES,
-        dropout=config.DROPOUT
+        num_classes=int(task_info["num_classes"]),
+        dropout=config.DROPOUT,
     )
-    
-    print("[2/3] Creating Flower clients...")
-    clients = []
-    for i, dataset in enumerate(train_datasets):
-        local_model = create_model(
-            num_features=config.NUM_FEATURES,
-            hidden_size=config.HIDDEN_SIZE,
-            num_layers=config.NUM_LAYERS,
-            num_classes=config.NUM_CLASSES,
-            dropout=config.DROPOUT
-        )
-        
-        client = FlowerClient(
-            client_id=i,
-            model=local_model,
-            train_dataset=dataset,
+
+
+def build_clients(datasets, model, device):
+    return [
+        RoboMimicRegressionClient(
+            client_id=index,
+            model=copy.deepcopy(model),
+            dataset=dataset,
             device=device,
             batch_size=config.BATCH_SIZE,
             learning_rate=config.LEARNING_RATE,
-            local_epochs=config.LOCAL_EPOCHS
+            local_epochs=config.LOCAL_EPOCHS,
         )
-        clients.append(client)
-    
-    print(f"Created {len(clients)} clients")
-    
-    print(f"\n[3/3] Running FedAvg...")
-    print(f"  Number of rounds: {config.NUM_ROUNDS}")
-    print(f"  Clients per round: {config.CLIENTS_PER_ROUND}")
-    print(f"  Local epochs: {config.LOCAL_EPOCHS}")
-    
-    history = run_fedavg(
-        clients=clients,
-        model=global_model,
-        test_loader=test_loader,
-        device=device,
-        num_rounds=config.NUM_ROUNDS,
-        clients_per_round=config.CLIENTS_PER_ROUND
-    )
-    
-    model_bytes = state_dict_nbytes(global_model.state_dict())
-    communication_bytes_per_round = [
-        2 * model_bytes * config.CLIENTS_PER_ROUND
-        for _ in range(config.NUM_ROUNDS)
-    ]
-    centralized_accuracy = [
-        round_metrics.get("accuracy", 0.0)
-        for _, round_metrics in history.metrics_centralized
+        for index, dataset in enumerate(datasets)
     ]
 
-    results = {
-        "experiment": "baseline_fedavg",
-        "config": {
-            "num_rounds": config.NUM_ROUNDS,
-            "num_clients": config.NUM_ROBOTS,
-            "clients_per_round": config.CLIENTS_PER_ROUND,
-            "local_epochs": config.LOCAL_EPOCHS,
-            "batch_size": config.BATCH_SIZE,
-            "learning_rate": config.LEARNING_RATE,
-            "alpha": config.ALPHA,
+
+def macro_history(per_task):
+    metric_names = ("loss", "mae", "rmse", "r2", "task_success_rate")
+    rounds = next(iter(per_task.values()))["rounds"] if per_task else []
+    history = {"rounds": rounds, "per_task": per_task}
+    for metric in metric_names:
+        history[metric] = [
+            float(np.mean([task_history[metric][index] for task_history in per_task.values()]))
+            for index in range(len(rounds))
+        ]
+    history["communication_bytes_per_round"] = [
+        int(sum(
+            task_history["communication_bytes_per_round"][index]
+            for task_history in per_task.values()
+        ))
+        for index in range(len(rounds))
+    ]
+    history["communication_mb_per_round"] = [
+        value / (1024 ** 2) for value in history["communication_bytes_per_round"]
+    ]
+    return history
+
+
+def save_baseline_checkpoint(path, algorithm, task_models, tasks):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "algorithm": algorithm,
+        "tasks": tasks,
+        "task_models": {
+            task_name: {
+                "model_config": model_config,
+                "state_dict": model.state_dict(),
+            }
+            for task_name, (model, model_config) in task_models.items()
         },
-        "metrics": {
-            "losses_centralized": history.losses_centralized,
-            "metrics_centralized": history.metrics_centralized,
-            "rounds_to_convergence": rounds_to_convergence(centralized_accuracy),
-            "communication_bytes_per_round": communication_bytes_per_round,
-            "communication_mb_per_round": [
-                value / (1024**2) for value in communication_bytes_per_round
-            ],
-        }
+    }, path)
+
+
+def experiment_config():
+    return {
+        "dataset": "robomimic",
+        "num_rounds": config.NUM_ROUNDS,
+        "num_robots": config.NUM_ROBOTS,
+        "clients_per_round": config.CLIENTS_PER_ROUND,
+        "local_epochs": config.LOCAL_EPOCHS,
+        "batch_size": config.BATCH_SIZE,
+        "learning_rate": config.LEARNING_RATE,
     }
-    
-    results_path = config.RESULTS_DIR / "baseline_fedavg_results.json"
-    save_results(results, results_path)
-    print(f"\n✓ Results saved to: {results_path}")
-    
-    if len(history.metrics_centralized) > 0:
-        final_metrics = history.metrics_centralized[-1][1]
-        print("\nFinal Results:")
-        print(f"  Accuracy: {final_metrics.get('accuracy', 0):.4f}")
-        print(f"  F1-Score: {final_metrics.get('f1', 0):.4f}")
-    
+
+
+def run_fedavg(client_datasets, test_datasets, tasks, device):
+    print("\n" + "=" * 80)
+    print("FEDAVG ON ROBOMIMIC")
+    print("=" * 80)
+    histories = {}
+    task_models = {}
+
+    for task_info in tasks:
+        task_id = task_info["task_id"]
+        datasets = task_client_datasets(client_datasets, task_id)
+        model = build_model(datasets[0], task_info).to(device)
+        clients = build_clients(datasets, model, device)
+        test_loader = get_dataloader(
+            test_datasets[task_id], config.BATCH_SIZE, shuffle=False
+        )
+        print(f"\nTask {task_info['name']} ({len(clients)} robot clients)")
+        histories[task_info["name"]] = run_fedavg_regression(
+            clients=clients,
+            global_model=model,
+            test_loader=test_loader,
+            device=device,
+            task_info=task_info,
+            num_rounds=config.NUM_ROUNDS,
+            clients_per_round=config.CLIENTS_PER_ROUND,
+            seed=config.SEED + task_id,
+        )
+        task_models[task_info["name"]] = (
+            model,
+            {
+                "num_features": int(datasets[0].sequences.shape[-1]),
+                "hidden_size": config.HIDDEN_SIZE,
+                "num_layers": config.NUM_LAYERS,
+                "output_dim": int(task_info["num_classes"]),
+                "dropout": config.DROPOUT,
+            },
+        )
+
+    results = {
+        "experiment": "robomimic_fedavg",
+        "config": experiment_config(),
+        "tasks": tasks,
+        "metrics": macro_history(histories),
+    }
+    save_results(results, config.RESULTS_DIR / "baseline_fedavg_results.json")
+    save_baseline_checkpoint(
+        config.RESULTS_DIR / "models" / "robomimic_fedavg_final.pth",
+        "fedavg",
+        task_models,
+        tasks,
+    )
     return results
 
 
-def run_clustered_experiment(train_datasets, test_dataset, device):
-    print("\n" + "="*80)
-    print("EXPERIMENT 2: CLUSTERED FEDERATED LEARNING")
-    print("="*80)
-    
-    
-    test_loader = get_dataloader(test_dataset, config.BATCH_SIZE, shuffle=False)
-    
-    print("\n[1/3] Creating clustered clients...")
-    clients = []
-    for i, dataset in enumerate(train_datasets):
-        local_model = create_model(
-            num_features=config.NUM_FEATURES,
-            hidden_size=config.HIDDEN_SIZE,
-            num_layers=config.NUM_LAYERS,
-            num_classes=config.NUM_CLASSES,
-            dropout=config.DROPOUT
+def run_clustered(client_datasets, test_datasets, tasks, device):
+    print("\n" + "=" * 80)
+    print("CLUSTERED FL ON ROBOMIMIC")
+    print("=" * 80)
+    histories = {}
+    checkpoint_models = {}
+
+    for task_info in tasks:
+        task_id = task_info["task_id"]
+        datasets = task_client_datasets(client_datasets, task_id)
+        model = build_model(datasets[0], task_info).to(device)
+        clients = build_clients(datasets, model, device)
+        test_loader = get_dataloader(
+            test_datasets[task_id], config.BATCH_SIZE, shuffle=False
         )
-        
-        client = ClusteredFlowerClient(
-            client_id=i,
-            model=local_model,
-            train_dataset=dataset,
+        print(f"\nTask {task_info['name']} ({len(clients)} robot clients)")
+        history, cluster_models = run_clustered_regression(
+            clients=clients,
+            initial_model=model,
+            test_loader=test_loader,
             device=device,
-            batch_size=config.BATCH_SIZE,
-            learning_rate=config.LEARNING_RATE,
-            local_epochs=config.LOCAL_EPOCHS
+            task_info=task_info,
+            num_rounds=config.NUM_ROUNDS,
+            num_clusters=config.NUM_CLUSTERS,
+            clustering_method=config.CLUSTERING_METHOD,
+            reclustering_interval=config.RECLUSTERING_INTERVAL,
+            seed=config.SEED + task_id,
         )
-        clients.append(client)
-    
-    print(f"Created {len(clients)} clients")
-    
-    print(f"\n[2/3] Creating cluster models...")
-    cluster_models = {}
-    for cluster_id in range(config.NUM_CLUSTERS):
-        model = create_model(
-            num_features=config.NUM_FEATURES,
-            hidden_size=config.HIDDEN_SIZE,
-            num_layers=config.NUM_LAYERS,
-            num_classes=config.NUM_CLASSES,
-            dropout=config.DROPOUT
-        )
-        cluster_models[cluster_id] = ClusteredFlowerClient(
-            client_id=f"cluster_{cluster_id}",
-            model=model,
-            train_dataset=train_datasets[0],  # Dummy dataset
-            device=device,
-            batch_size=config.BATCH_SIZE,
-            learning_rate=config.LEARNING_RATE,
-            local_epochs=config.LOCAL_EPOCHS
-        )
-    
-    print(f"Created {len(cluster_models)} cluster models")
-    
-    print(f"\n[3/3] Running Clustered FL...")
-    print(f"  Number of rounds: {config.NUM_ROUNDS}")
-    print(f"  Number of clusters: {config.NUM_CLUSTERS}")
-    print(f"  Clustering method: {config.CLUSTERING_METHOD}")
-    print(f"  Reclustering interval: {config.RECLUSTERING_INTERVAL}")
-    
-    history = run_clustered_fl(
-        clients=clients,
-        cluster_models=cluster_models,
-        test_loader=test_loader,
-        device=device,
-        num_rounds=config.NUM_ROUNDS,
-        num_clusters=config.NUM_CLUSTERS,
-        clustering_method=config.CLUSTERING_METHOD,
-        reclustering_interval=config.RECLUSTERING_INTERVAL
-    )
-    
+        histories[task_info["name"]] = history
+        checkpoint_models[task_info["name"]] = {
+            "model_config": {
+                "num_features": int(datasets[0].sequences.shape[-1]),
+                "hidden_size": config.HIDDEN_SIZE,
+                "num_layers": config.NUM_LAYERS,
+                "output_dim": int(task_info["num_classes"]),
+                "dropout": config.DROPOUT,
+            },
+            "cluster_state_dicts": {
+                str(cluster_id): cluster_model.state_dict()
+                for cluster_id, cluster_model in cluster_models.items()
+            },
+        }
+
     results = {
-        "experiment": "clustered_fl",
+        "experiment": "robomimic_clustered_fl",
         "config": {
-            "num_rounds": config.NUM_ROUNDS,
-            "num_clients": config.NUM_ROBOTS,
+            **experiment_config(),
             "num_clusters": config.NUM_CLUSTERS,
             "clustering_method": config.CLUSTERING_METHOD,
             "reclustering_interval": config.RECLUSTERING_INTERVAL,
-            "local_epochs": config.LOCAL_EPOCHS,
-            "batch_size": config.BATCH_SIZE,
-            "learning_rate": config.LEARNING_RATE,
-            "alpha": config.ALPHA,
         },
-        "metrics": history
+        "tasks": tasks,
+        "metrics": macro_history(histories),
     }
-    
-    results_path = config.RESULTS_DIR / "clustered_fl_results.json"
-    save_results(results, results_path)
-    print(f"\n✓ Results saved to: {results_path}")
-    
-    if len(history['accuracy']) > 0:
-        print("\nFinal Results:")
-        print(f"  Accuracy: {history['accuracy'][-1]:.4f}")
-        print(f"  F1-Score: {history['f1'][-1]:.4f}")
-        print(f"  Loss: {history['loss'][-1]:.4f}")
-    
+    save_results(results, config.RESULTS_DIR / "clustered_fl_results.json")
+    checkpoint_path = config.RESULTS_DIR / "models" / "robomimic_clustered_final.pth"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "algorithm": "clustered_fl",
+        "tasks": tasks,
+        "task_models": checkpoint_models,
+    }, checkpoint_path)
     return results
 
 
 def main():
-    print("="*80)
-    print("FEDERATED LEARNING EXPERIMENTS")
-    print("="*80)
-    
-    print("\n[Setup] Setting seed...")
+    print("=" * 80)
+    print("ROBOMIMIC FEDERATED BASELINES")
+    print("=" * 80)
     set_seed(config.SEED)
-    
-    print("[Setup] Setting device...")
     device = get_device(config.DEVICE)
     print(f"Using device: {device}")
-    
-    print("\n[Setup] Loading HAR dataset...")
-    train_datasets, test_dataset = load_data_for_clients(
-        data_dir=config.DATA_DIR,
-        num_clients=config.NUM_ROBOTS,
-        non_iid=True,
-        alpha=config.ALPHA
+    client_datasets, test_datasets, tasks = load_data()
+    print(f"Loaded {len(tasks)} tasks: {', '.join(task['name'] for task in tasks)}")
+
+    fedavg_results = run_fedavg(client_datasets, test_datasets, tasks, device)
+    clustered_results = run_clustered(client_datasets, test_datasets, tasks, device)
+    print("\nExperiments completed.")
+    print(
+        f"FedAvg final macro RMSE: {fedavg_results['metrics']['rmse'][-1]:.4f}"
     )
-    
-    print(f"Number of clients: {len(train_datasets)}")
-    print(f"Test samples: {len(test_dataset)}")
-    print("Client data distribution:")
-    for i, dataset in enumerate(train_datasets):
-        print(f"  Client {i}: {len(dataset)} samples")
-    
-    baseline_results = run_baseline_experiment(train_datasets, test_dataset, device)
-    clustered_results = run_clustered_experiment(train_datasets, test_dataset, device)
-    
-    print("\n" + "="*80)
-    print("ALL EXPERIMENTS COMPLETED!")
-    print("="*80)
-    print("\nResults saved in:")
-    print(f"  - {config.RESULTS_DIR / 'baseline_fedavg_results.json'}")
-    print(f"  - {config.RESULTS_DIR / 'clustered_fl_results.json'}")
+    print(
+        f"Clustered FL final macro RMSE: {clustered_results['metrics']['rmse'][-1]:.4f}"
+    )
 
 
 if __name__ == "__main__":

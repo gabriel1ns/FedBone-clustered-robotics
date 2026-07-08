@@ -1,6 +1,6 @@
 # FedBone-Robotics
 
-Implementação de Federated Learning multi-tarefa para sistemas robóticos em nuvem. O projeto combina **Clustered FL** e **FedBone** (split learning com projeção de gradientes) usando o dataset UCI HAR como proxy inicial e RoboMimic como dataset robótico offline para imitation learning multi-tarefa.
+Implementação de Federated Learning multi-tarefa para sistemas robóticos em nuvem. O projeto compara **FedAvg**, **Clustered FL** e **FedBone** (split learning com projeção de gradientes) no RoboMimic, usando imitation learning multi-tarefa.
 
 ---
 
@@ -16,7 +16,7 @@ Frotas robóticas operam em ambientes distribuídos, com dados heterogêneos e r
 Agregação federada padrão. O servidor inicializa um modelo global, distribui aos clientes, cada cliente treina localmente e retorna os pesos, que são agregados via média ponderada.
 
 **Clustered FL**
-Clientes são agrupados por similaridade de modelo (K-Means ou hierárquico) antes da agregação. Cada cluster mantém seu próprio modelo global, permitindo especialização por tipo de tarefa. O reagrupamento pode ocorrer em intervalos configuráveis durante o treinamento.
+Dentro de cada tarefa, clientes são agrupados pela distribuição local de observações e ações (K-Means ou hierárquico). Cada cluster mantém seu próprio modelo, permitindo especialização por perfil de demonstração. O reagrupamento pode ocorrer em intervalos configuráveis.
 
 **FedBone**
 Arquitetura de split learning combinada com agregação por projeção de gradientes (GP Aggregation). O modelo é dividido entre cliente e servidor:
@@ -55,7 +55,7 @@ Além de acurácia e F1-score, o projeto registra ou disponibiliza utilitários 
 - acurácia por cluster
 - bytes transmitidos por round
 
-As funções reutilizáveis ficam em `utils/robotics_metrics.py`. No HAR, TSR é usado como proxy de sucesso da tarefa; em datasets robóticos reais, ele deve ser calculado a partir de labels de sucesso/falha da execução.
+As funções reutilizáveis ficam em `utils/robotics_metrics.py`. Na avaliação offline do RoboMimic, TSR mede a proporção de ações cujo erro vetorial fica abaixo do limiar configurado. Na avaliação online, usa o sucesso real reportado pelo ambiente.
 
 As métricas de visão multi-tarefa usadas no artigo, como mIoU, RMSE, mErr, odsF e maxF, ficam em `utils/vision_mtl_metrics.py` para preparar a adaptação futura ao NYUv2/PASCAL.
 
@@ -68,16 +68,13 @@ FedBone-robotics/
 ├── config/
 │   └── config.py               # Hiperparâmetros e configurações globais
 ├── data/
-│   ├── download_har.py         # Download do UCI HAR Dataset
-│   ├── dataset_loader.py       # Split não-IID via distribuição Dirichlet
-│   ├── multitask_loader.py     # Criação de múltiplas tarefas a partir do HAR
-│   └── robomimic_loader.py     # Loader HDF5 RoboMimic para FedBone
+│   ├── datasets.py             # Dataset e DataLoader compartilhados
+│   └── robomimic_loader.py     # Loader HDF5 RoboMimic
 ├── models/
 │   ├── model.py                # Modelo LSTM baseline
 │   └── fedbone_model.py        # Arquitetura FedBone (cliente e servidor)
 ├── federated/
-│   ├── baseline_fl.py          # FedAvg via Flower
-│   ├── clustered_fl.py         # Clustered FL
+│   ├── robomimic_baselines.py # FedAvg e Clustered FL para regressão de ações
 │   ├── fedbone_fl.py           # Loop de treinamento FedBone
 │   └── gp_aggregation.py       # GP Aggregation
 ├── runner/
@@ -99,14 +96,14 @@ FedBone-robotics/
 git clone https://github.com/seu-usuario/FedBone-robotics.git
 cd FedBone-robotics
 pip install -r requirements.txt
-python data/download_har.py
+.\scripts\download_robomimic_lowdim.ps1 -Scope expanded-ph
 ```
 
 ---
 
 ## Uso
 
-Executar FedAvg e Clustered FL:
+Executar FedAvg e Clustered FL nas mesmas tarefas RoboMimic:
 ```bash
 python runner/run_experiments.py
 ```
@@ -116,7 +113,7 @@ Executar FedBone:
 python runner/run_fedbone.py
 ```
 
-Para usar RoboMimic, coloque datasets `low_dim.hdf5` em `data/robomimic/`, ajuste `DATASET = "robomimic"` em `config/config.py` e execute o mesmo runner. Para aumentar o escopo experimental, use `.\scripts\download_robomimic_lowdim.ps1 -Scope expanded-ph`, que adiciona Lift, Can, Square, Tool Hang e Transport no protocolo low_dim.
+Coloque datasets `low_dim.hdf5` em `data/robomimic/`. Para aumentar o escopo experimental, use `.\scripts\download_robomimic_lowdim.ps1 -Scope expanded-ph`, que adiciona Lift, Can, Square, Tool Hang e Transport.
 
 Gerar visualizações:
 ```python
@@ -137,15 +134,13 @@ Os principais parâmetros estão em `config/config.py`:
 |---|---|---|
 | `NUM_ROBOTS` | 10 | Número de clientes |
 | `NUM_ROUNDS` | 50 | Rounds de comunicação |
-| `CLIENTS_PER_ROUND` | 5 | Clientes selecionados por round |
-| `LOCAL_EPOCHS` | 5 | Épocas locais por round |
-| `ALPHA` | 0.5 | Heterogeneidade Dirichlet (menor = mais heterogêneo) |
+| `CLIENTS_PER_ROUND` | 10 | Clientes selecionados por round |
+| `LOCAL_EPOCHS` | 2 | Épocas locais por round |
 | `NUM_CLUSTERS` | 3 | Clusters para Clustered FL |
 | `EMBED_DIM` | 64 | Dimensão do embedding no cliente |
 | `GENERAL_HIDDEN` | 128 | Hidden size do General Model no servidor |
 | `USE_GP_AGGREGATION` | True | Habilitar GP Aggregation no FedBone |
 | `RUN_FEDBONE_ABLATIONS` | True | Rodar FedBone sem GP vs com GP no mesmo protocolo |
-| `DATASET` | robomimic | `har` ou `robomimic` |
 | `ROBOMIMIC_DATA_DIR` | data/robomimic | Diretório com arquivos HDF5 RoboMimic |
 
 ---

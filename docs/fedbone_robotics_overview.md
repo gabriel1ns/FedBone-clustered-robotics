@@ -43,13 +43,14 @@ A apresentacao propoe complementar as metricas do artigo com medidas mais ligada
 - **Erro de posicionamento em mm:** mede precisao em grasping e pick-and-place.
 - **Rounds ate convergencia:** mede eficiencia do treinamento federado.
 - **Latencia de inferencia end-to-end:** mede viabilidade de execucao com parte do modelo na nuvem.
-- **Acuracia cross-client/cross-cluster:** mede transferencia entre robos, ambientes ou clusters.
-- **Acuracia por cluster:** mede personalizacao dos modelos por grupos de clientes.
+- **RMSE cross-client/cross-cluster:** mede transferencia entre robos, ambientes ou clusters.
+- **RMSE e TSR por cluster:** medem personalizacao dos modelos por grupos de clientes.
 - **Bytes transmitidos por round:** mede custo de comunicacao.
 
 ## Estado atual do repositorio
 
-O projeto usa o UCI HAR como proxy inicial para dados sensoriais de robos. Ele ja contem:
+O projeto usa exclusivamente o RoboMimic low-dimensional para imitation learning
+de tarefas de manipulacao. Ele contem:
 
 - FedAvg baseline.
 - Clustered FL.
@@ -57,12 +58,13 @@ O projeto usa o UCI HAR como proxy inicial para dados sensoriais de robos. Ele j
 - Task adaptation no cliente.
 - GP Aggregation para conflitos de gradiente.
 
-Como o HAR e uma tarefa de classificacao, o TSR atual funciona como proxy de acuracia/sucesso. Para datasets roboticos reais, o TSR deve vir de labels binarias de sucesso/falha, e o erro de posicionamento deve vir de predicoes continuas de pose, grasp point ou waypoint.
+No protocolo offline, TSR e a proporcao de acoes preditas cujo erro vetorial
+fica abaixo de um limiar. No RoboSuite, o avaliador online registra o sucesso
+real da tarefa reportado pelo ambiente.
 
 ## Proximos passos tecnicos
 
-1. Rodar FedBone, FedAvg e Clustered FL com as novas metricas salvas nos resultados.
-2. Adaptar o loader para um dataset multi-tarefa de visao como NYUv2.
-3. Criar heads especificos para segmentacao, profundidade, normais e bordas.
-4. Trocar o backbone LSTM por um backbone visual apropriado, como CNN ou Transformer leve no cliente e general model visual no servidor.
-5. Mapear um dataset mais diretamente robotico, como Open X-Embodiment ou uma suite MTL federada, para medir TSR, latencia e transferencia entre ambientes.
+1. Executar os tres metodos no mesmo conjunto de arquivos e sementes.
+2. Avaliar online os checkpoints de baseline no RoboSuite.
+3. Reportar media e desvio entre varias sementes.
+4. Comparar custo de comunicacao e latencia de inferencia entre os metodos.

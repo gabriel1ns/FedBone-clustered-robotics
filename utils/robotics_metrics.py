@@ -8,10 +8,10 @@ import torch
 
 def task_success_rate(y_true: Sequence[int], y_pred: Sequence[int]) -> float:
     """
-    Classification proxy for robotic task success.
+    Success rate for discrete robotic outcomes.
 
-    For HAR this is equivalent to accuracy. For manipulation datasets, success
-    should be passed as binary success/failure labels.
+    Continuous RoboMimic action success is calculated with an error threshold
+    in federated.fedbone_fl.compute_task_success.
     """
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)

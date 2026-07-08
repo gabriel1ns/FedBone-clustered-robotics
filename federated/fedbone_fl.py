@@ -18,7 +18,7 @@ from utils.robotics_metrics import (
     rounds_to_convergence,
     task_success_rate,
 )
-from data.dataset_loader import get_dataloader
+from data.datasets import get_dataloader
 
 
 def get_task_criterion(task_type):

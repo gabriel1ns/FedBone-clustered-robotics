@@ -5,9 +5,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from config import config
-from data.multitask_loader import load_multitask_data
 from data.robomimic_loader import load_robomimic_data
-from data.dataset_loader import get_dataloader
+from data.datasets import get_dataloader
 from models.fedbone_model import create_fedbone_client, create_fedbone_server, count_parameters
 from federated.fedbone_fl import FedBoneClientTrainer, FedBoneServer, run_fedbone
 from utils.utils import set_seed, get_device, save_results
@@ -93,30 +92,15 @@ def save_fedbone_checkpoint(server, clients, tasks, path, embed_dim, hidden_size
 
 
 def load_configured_multitask_data():
-    if config.DATASET.lower() == "robomimic":
-        client_datasets, test_datasets, tasks = load_robomimic_data(
-            data_dir=config.ROBOMIMIC_DATA_DIR,
-            num_clients=config.NUM_ROBOTS,
-            task_files=config.ROBOMIMIC_TASK_FILES,
-            obs_keys=config.ROBOMIMIC_OBS_KEYS,
-            test_ratio=config.ROBOMIMIC_TEST_RATIO,
-            max_demos_per_task=config.ROBOMIMIC_MAX_DEMOS_PER_TASK,
-            seed=config.SEED,
-            success_threshold=config.ROBOMIMIC_SUCCESS_THRESHOLD,
-        )
-        for client_task_datasets in client_datasets:
-            if client_task_datasets:
-                sample_dataset = client_task_datasets[0]["dataset"]
-                config.NUM_FEATURES = int(sample_dataset.sequences.shape[-1])
-                break
-        return client_datasets, test_datasets, tasks
-
-    return load_multitask_data(
-        data_dir=config.DATA_DIR,
+    return load_robomimic_data(
+        data_dir=config.ROBOMIMIC_DATA_DIR,
         num_clients=config.NUM_ROBOTS,
-        num_tasks=config.NUM_TASKS,
-        task_distribution=config.TASK_DISTRIBUTION,
-        alpha=config.ALPHA
+        task_files=config.ROBOMIMIC_TASK_FILES,
+        obs_keys=config.ROBOMIMIC_OBS_KEYS,
+        test_ratio=config.ROBOMIMIC_TEST_RATIO,
+        max_demos_per_task=config.ROBOMIMIC_MAX_DEMOS_PER_TASK,
+        seed=config.SEED,
+        success_threshold=config.ROBOMIMIC_SUCCESS_THRESHOLD,
     )
 
 
@@ -360,7 +344,7 @@ def main():
     print(f"Using device: {device}")
     
     # Load multi-task data
-    print(f"\nLoading {config.DATASET.upper()} multi-task dataset...")
+    print("\nLoading ROBOMIMIC multi-task dataset...")
     client_datasets, test_datasets, tasks = load_configured_multitask_data()
     
     # Run main experiment

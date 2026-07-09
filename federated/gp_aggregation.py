@@ -40,23 +40,33 @@ class GPAggregation:
                 unflat_grads[key] = None
         return unflat_grads
     
-    def compute_gradient_attention(self, current_grad, historical_grad):
+    def compute_gradient_attentions(self, current_grads, historical_grad):
         """
-        Compute attention score between current and historical gradient
-        Using softmax of dot product similarity
+        Compute attention jointly across clients.
+
+        A per-client softmax over a single scalar is always one and therefore
+        cannot express attention. Similarities must be normalized together.
+        Multiplying by the number of clients keeps the mean scale at one, so
+        attention changes relative influence without shrinking every gradient.
         """
         if historical_grad is None:
-            return 1.0
-        
-        # Normalize gradients
-        current_norm = F.normalize(current_grad.unsqueeze(0), p=2, dim=1)
-        historical_norm = F.normalize(historical_grad.unsqueeze(0), p=2, dim=1)
-        
-        # Compute attention score
-        similarity = torch.mm(current_norm, historical_norm.t()).squeeze()
-        attention = torch.softmax(similarity.unsqueeze(0), dim=0).squeeze()
-        
-        return attention.item()
+            return torch.ones(
+                len(current_grads),
+                device=current_grads[0].device,
+                dtype=current_grads[0].dtype,
+            )
+
+        historical_norm = F.normalize(
+            historical_grad.unsqueeze(0), p=2, dim=1
+        ).squeeze(0)
+        similarities = torch.stack([
+            torch.dot(
+                F.normalize(gradient.unsqueeze(0), p=2, dim=1).squeeze(0),
+                historical_norm,
+            )
+            for gradient in current_grads
+        ])
+        return torch.softmax(similarities, dim=0) * len(current_grads)
     
     def project_conflicting_gradients(self, grad_i, grad_j):
         """
@@ -103,14 +113,14 @@ class GPAggregation:
             flat_grads.append(flat_grad)
         
         # Step 1: Scale gradients using attention to historical gradients
-        scaled_grads = []
-        for i, flat_grad in enumerate(flat_grads):
-            attention = self.compute_gradient_attention(
-                flat_grad, 
-                self.previous_aggregated_grad
-            )
-            scaled_grad = attention * flat_grad
-            scaled_grads.append(scaled_grad)
+        attentions = self.compute_gradient_attentions(
+            flat_grads,
+            self.previous_aggregated_grad,
+        )
+        scaled_grads = [
+            attention * flat_grad
+            for attention, flat_grad in zip(attentions, flat_grads)
+        ]
         
         # Step 2: Project conflicting gradients
         projected_grads = []

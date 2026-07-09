@@ -113,6 +113,19 @@ Executar FedBone:
 python runner/run_fedbone.py
 ```
 
+Executar a comparação controlada no mesmo backbone multi-tarefa:
+
+```bash
+python runner/run_controlled_comparison.py
+```
+
+Esse protocolo cria uma única inicialização e um cronograma estratificado
+compartilhado pelos quatro métodos. Em cada round, são selecionados 10 dos 50
+clientes robô-tarefa, exatamente 2 por tarefa. As estratégias comparadas são
+Shared-backbone FedAvg, Shared-backbone Clustered, FedBone Simple e FedBone GP.
+O JSON registra o cronograma completo e o hash SHA-256 da inicialização para
+permitir auditoria da equivalência experimental.
+
 Coloque datasets `low_dim.hdf5` em `data/robomimic/`. Para aumentar o escopo experimental, use `.\scripts\download_robomimic_lowdim.ps1 -Scope expanded-ph`, que adiciona Lift, Can, Square, Tool Hang e Transport.
 
 Gerar visualizações:

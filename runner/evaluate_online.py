@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from config import config
 from models.fedbone_model import create_fedbone_client, create_fedbone_server
+from models.model import create_model
 from utils.utils import get_device, save_results, set_seed
 
 
@@ -49,6 +50,37 @@ def load_policy(checkpoint_path, task_name, device):
         raise KeyError(f"Task {task_name!r} not found in checkpoint. Available: {sorted(tasks)}")
 
     task = tasks[task_name]
+    algorithm = checkpoint.get("algorithm", "fedbone")
+
+    if algorithm == "fedavg":
+        task_state = checkpoint["task_models"][task_name]
+        model_config = task_state["model_config"]
+        model = create_model(
+            num_features=int(model_config["num_features"]),
+            hidden_size=int(model_config["hidden_size"]),
+            num_layers=int(model_config["num_layers"]),
+            num_classes=int(model_config["output_dim"]),
+            dropout=float(model_config["dropout"]),
+        ).to(device)
+        model.load_state_dict(task_state["state_dict"])
+        model.eval()
+        obs_keys = task.get("obs_keys")
+        if not obs_keys:
+            raise ValueError(f"Checkpoint task {task_name!r} does not include obs_keys.")
+        return model, None, obs_keys, task, algorithm
+
+    controlled_algorithms = {
+        "shared_backbone_fedavg",
+        "shared_backbone_clustered",
+        "fedbone_simple",
+        "fedbone_gp",
+    }
+    if algorithm != "fedbone" and algorithm not in controlled_algorithms:
+        raise ValueError(
+            f"Online evaluation does not support checkpoint algorithm {algorithm!r}. "
+            "Supported algorithms: fedbone, fedavg, and controlled shared-backbone methods."
+        )
+
     task_id = int(task["task_id"])
     client_state = checkpoint["client_states"][task_id]
     model_config = checkpoint["model_config"]
@@ -79,7 +111,7 @@ def load_policy(checkpoint_path, task_name, device):
     server_model.load_state_dict(checkpoint["server_state_dict"])
     client_model.eval()
     server_model.eval()
-    return client_model, server_model, obs_keys, task
+    return client_model, server_model, obs_keys, task, algorithm
 
 
 def normalize_observation(obs_vector, task):
@@ -117,9 +149,12 @@ def predict_action(client_model, server_model, obs_vector, task, device):
     model_input = normalize_observation(obs_vector, task)
     inputs = torch.tensor(model_input, dtype=torch.float32, device=device).view(1, 1, -1)
     with torch.no_grad():
-        embeddings = client_model(inputs, general_features=None)
-        general_features = server_model(embeddings)
-        action = client_model(None, general_features=general_features)
+        if server_model is None:
+            action = client_model(inputs)
+        else:
+            embeddings = client_model(inputs, general_features=None)
+            general_features = server_model(embeddings)
+            action = client_model(None, general_features=general_features)
     action = action.squeeze(0).cpu().numpy()
     return denormalize_action(action, task)
 
@@ -176,7 +211,9 @@ def evaluate_task(args):
     device = get_device(args.device)
     checkpoint_path = Path(args.checkpoint)
 
-    client_model, server_model, obs_keys, task = load_policy(checkpoint_path, args.task, device)
+    client_model, server_model, obs_keys, task, algorithm = load_policy(
+        checkpoint_path, args.task, device
+    )
     env_name, robots, env = make_env(suite, args, task)
 
     low, high = env.action_spec
@@ -250,6 +287,7 @@ def evaluate_task(args):
     }
     results = {
         "task": args.task,
+        "algorithm": algorithm,
         "env_name": env_name,
         "robots": robots,
         "checkpoint": str(checkpoint_path),

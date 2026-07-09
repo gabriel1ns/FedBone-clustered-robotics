@@ -125,3 +125,44 @@ The evaluator recognizes `ph`, `mh`, and `mg` variants of Lift, Can, Square,
 Tool Hang, and Transport. When multiple tasks are evaluated, the output JSON
 contains per-task results and macro success-rate / return summaries. If
 `--record-video` is set, the task name is appended to each video filename.
+
+FedAvg checkpoints produced by `runner/run_experiments.py` use the same online
+evaluator. For a controlled environment-level comparison with FedBone:
+
+```powershell
+python runner/evaluate_online.py --checkpoint results/models/robomimic_fedavg_final.pth --task all --episodes 10 --seed 42 --output results/online_eval_fedavg_all.json
+python runner/evaluate_online.py --checkpoint results/models/fedbone_gp_aggregation_final.pth --task all --episodes 10 --seed 42 --output results/online_eval_fedbone_gp_all.json
+```
+
+## Controlled shared-backbone protocol
+
+`runner/run_controlled_comparison.py` isolates the aggregation strategy while
+holding the data, FedBone client/server architecture, initial parameters,
+optimizer settings, client participation, and local work fixed.
+The embedding, task adapter, and action head are synchronized per task:
+selected clients start from the same task state, and their updated client-side
+modules are averaged and redistributed for the next round.
+
+```powershell
+python runner/run_controlled_comparison.py
+```
+
+Every round selects two robot clients from each of the five tasks. The same
+precomputed schedule is replayed for all methods:
+
+- `shared_backbone_fedavg`: weighted model-state aggregation.
+- `shared_backbone_clustered`: clusters client model deltas and gives equal
+  influence to the resulting update centroids while retaining one backbone.
+- `fedbone_simple`: weighted server-gradient averaging.
+- `fedbone_gp`: FedBone gradient projection aggregation.
+
+The operational task-specialized FedAvg / Clustered results remain a separate
+comparison and should not be mixed with this controlled ablation.
+Progress is written after every round, so an interrupted run retains its
+completed history.
+
+For a one-round smoke test:
+
+```powershell
+python runner/run_controlled_comparison.py --rounds 1 --max-demos-per-task 2
+```

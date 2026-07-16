@@ -29,6 +29,7 @@ def load_data():
         max_demos_per_task=config.ROBOMIMIC_MAX_DEMOS_PER_TASK,
         seed=config.SEED,
         success_threshold=config.ROBOMIMIC_SUCCESS_THRESHOLD,
+        sequence_length=config.SEQUENCE_LENGTH,
     )
 
 
@@ -115,6 +116,7 @@ def experiment_config():
         "local_epochs": config.LOCAL_EPOCHS,
         "batch_size": config.BATCH_SIZE,
         "learning_rate": config.LEARNING_RATE,
+        "sequence_length": config.SEQUENCE_LENGTH,
     }
 
 
@@ -152,6 +154,7 @@ def run_fedavg(client_datasets, test_datasets, tasks, device):
                 "num_layers": config.NUM_LAYERS,
                 "output_dim": int(task_info["num_classes"]),
                 "dropout": config.DROPOUT,
+                "sequence_length": config.SEQUENCE_LENGTH,
             },
         )
 
@@ -207,6 +210,7 @@ def run_clustered(client_datasets, test_datasets, tasks, device):
                 "num_layers": config.NUM_LAYERS,
                 "output_dim": int(task_info["num_classes"]),
                 "dropout": config.DROPOUT,
+                "sequence_length": config.SEQUENCE_LENGTH,
             },
             "cluster_state_dicts": {
                 str(cluster_id): cluster_model.state_dict()

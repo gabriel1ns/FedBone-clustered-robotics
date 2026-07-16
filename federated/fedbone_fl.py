@@ -27,6 +27,32 @@ def get_task_criterion(task_type):
     return nn.CrossEntropyLoss()
 
 
+def split_gaussian_outputs(outputs):
+    mean, log_std = torch.chunk(outputs, 2, dim=-1)
+    log_std = torch.clamp(log_std, min=-5.0, max=2.0)
+    return mean, log_std
+
+
+def gaussian_nll_loss(outputs, targets):
+    mean, log_std = split_gaussian_outputs(outputs)
+    variance = torch.exp(2.0 * log_std)
+    loss = 0.5 * (((targets - mean) ** 2) / variance + 2.0 * log_std + math.log(2.0 * math.pi))
+    return loss.mean()
+
+
+def policy_action_mean(outputs, policy_type="deterministic"):
+    if policy_type == "gaussian":
+        return split_gaussian_outputs(outputs)[0]
+    return outputs
+
+
+def compute_policy_loss(outputs, targets, task_type, policy_type="deterministic"):
+    if task_type == "regression" and policy_type == "gaussian":
+        return gaussian_nll_loss(outputs, targets.float())
+    criterion = get_task_criterion(task_type)
+    return criterion(outputs, targets)
+
+
 def compute_task_success(y_true, y_pred, task_info):
     task_type = task_info.get('type', 'classification') if task_info else 'classification'
 
@@ -82,7 +108,8 @@ def denormalize_regression_values(values, task_info):
 class FedBoneClientTrainer:
     """Handles client-side training in split learning setup"""
     def __init__(self, client_id, client_model, train_dataset, device, 
-                 batch_size, learning_rate, local_epochs, task_type='classification'):
+                 batch_size, learning_rate, local_epochs, task_type='classification',
+                 policy_type='deterministic'):
         self.client_id = client_id
         self.client_model = client_model.to(device)
         self.device = device
@@ -91,6 +118,7 @@ class FedBoneClientTrainer:
         self.local_epochs = local_epochs
         self.num_samples = len(train_dataset)
         self.task_type = task_type
+        self.policy_type = policy_type
         
         self.optimizer = optim.Adam(
             self.client_model.get_client_parameters(),
@@ -117,7 +145,7 @@ class FedBoneClientTrainer:
         
         general_features = general_features.detach().requires_grad_(True)
         outputs = self.client_model(None, general_features=general_features)
-        loss = criterion(outputs, labels)
+        loss = compute_policy_loss(outputs, labels, self.task_type, self.policy_type)
         
         self.optimizer.zero_grad()
         loss.backward()
@@ -292,12 +320,19 @@ def run_fedbone(clients, server, test_loader, device, num_rounds,
                     general_features = client_server_model(embeddings)
                     communication_meter.record_split_batch(embeddings, general_features)
                     outputs = client.client_model(None, general_features=general_features)
+                    outputs_for_loss = outputs
+                    outputs = policy_action_mean(outputs, getattr(client, "policy_type", "deterministic"))
 
                     if client.task_type == 'regression' and outputs.shape[-1] == 1:
                         outputs = outputs.squeeze(-1)
                         batch_y = batch_y.float()
 
-                    loss = criterion(outputs, batch_y)
+                    loss = compute_policy_loss(
+                        outputs_for_loss,
+                        batch_y.float() if client.task_type == "regression" else batch_y,
+                        client.task_type,
+                        getattr(client, "policy_type", "deterministic"),
+                    )
                     loss.backward()
                     client_optimizer.step()
 
@@ -402,6 +437,7 @@ def evaluate_fedbone(sample_client, server, test_loader, device, criterion,
             embeddings = sample_client.client_model(sequences, general_features=None)
             general_features = server.server_model(embeddings)
             outputs = sample_client.client_model(None, general_features=general_features)
+            outputs = policy_action_mean(outputs, getattr(sample_client, "policy_type", "deterministic"))
 
             try:
                 if task_type == 'regression' and outputs.shape[-1] == 1:

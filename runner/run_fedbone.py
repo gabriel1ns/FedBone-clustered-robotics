@@ -12,7 +12,14 @@ from federated.fedbone_fl import FedBoneClientTrainer, FedBoneServer, run_fedbon
 from utils.utils import set_seed, get_device, save_results
 
 
-def build_fedbone_clients(client_datasets, device, embed_dim, hidden_size):
+def build_fedbone_clients(
+    client_datasets,
+    device,
+    embed_dim,
+    hidden_size,
+    policy_type=None,
+):
+    policy_type = policy_type or getattr(config, "POLICY_TYPE", "deterministic")
     clients = []
     virtual_client_id = 0
     client_params = 0
@@ -28,7 +35,8 @@ def build_fedbone_clients(client_datasets, device, embed_dim, hidden_size):
                 embed_dim=embed_dim,
                 hidden_size=hidden_size,
                 num_classes=task_dataset['num_classes'],
-                task_type=task_dataset['task_type']
+                task_type=task_dataset['task_type'],
+                policy_type=policy_type,
             )
 
             client = FedBoneClientTrainer(
@@ -39,11 +47,13 @@ def build_fedbone_clients(client_datasets, device, embed_dim, hidden_size):
                 batch_size=config.BATCH_SIZE,
                 learning_rate=config.LEARNING_RATE,
                 local_epochs=config.LOCAL_EPOCHS,
-                task_type=task_dataset['task_type']
+                task_type=task_dataset['task_type'],
+                policy_type=policy_type,
             )
             client.robot_id = task_dataset.get('robot_id', robot_id)
             client.task_id = task_dataset['task_id']
             client.task_name = task_dataset['task_name']
+            client.policy_type = policy_type
 
             clients.append(client)
             virtual_client_id += 1
@@ -85,6 +95,8 @@ def save_fedbone_checkpoint(server, clients, tasks, path, embed_dim, hidden_size
                 "hidden_size": hidden_size,
                 "num_layers": num_layers,
                 "dropout": config.DROPOUT,
+                "sequence_length": config.SEQUENCE_LENGTH,
+                "policy_type": getattr(config, "POLICY_TYPE", "deterministic"),
             },
         },
         path,
@@ -101,6 +113,7 @@ def load_configured_multitask_data():
         max_demos_per_task=config.ROBOMIMIC_MAX_DEMOS_PER_TASK,
         seed=config.SEED,
         success_threshold=config.ROBOMIMIC_SUCCESS_THRESHOLD,
+        sequence_length=config.SEQUENCE_LENGTH,
     )
 
 
@@ -186,6 +199,7 @@ def run_fedbone_experiment(client_datasets, test_datasets, tasks, device):
             "server_params": server_params,
             "client_params": client_params,
             "gp_aggregation": True,
+            "sequence_length": config.SEQUENCE_LENGTH,
         },
         "tasks": [
             {

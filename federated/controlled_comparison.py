@@ -11,7 +11,11 @@ os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 1))
 
 from sklearn.cluster import KMeans
 
-from federated.fedbone_fl import evaluate_fedbone_multitask, get_task_criterion
+from federated.fedbone_fl import (
+    compute_policy_loss,
+    evaluate_fedbone_multitask,
+    policy_action_mean,
+)
 from federated.gp_aggregation import (
     GPAggregation,
     compute_gradient_conflict_score,
@@ -178,9 +182,18 @@ def train_selected_client(client, initial_server, device):
             features = local_server(embeddings)
             communication.record_split_batch(embeddings, features)
             outputs = client.client_model(None, general_features=features)
-            if outputs.shape[-1] == 1:
-                outputs = outputs.squeeze(-1)
-            loss = get_task_criterion(client.task_type)(outputs, targets)
+            predictions = policy_action_mean(
+                outputs,
+                getattr(client, "policy_type", "deterministic"),
+            )
+            if predictions.shape[-1] == 1:
+                predictions = predictions.squeeze(-1)
+            loss = compute_policy_loss(
+                outputs,
+                targets,
+                client.task_type,
+                getattr(client, "policy_type", "deterministic"),
+            )
             loss.backward()
 
             batch_size = int(inputs.shape[0])

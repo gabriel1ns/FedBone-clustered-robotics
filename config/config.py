@@ -9,7 +9,8 @@ for d in [ROBOMIMIC_DATA_DIR, RESULTS_DIR / "plots", RESULTS_DIR / "models", RES
 
 
 NUM_ROBOTS = 10
-SEQUENCE_LENGTH = 1
+SEQUENCE_LENGTH = 10
+POLICY_TYPE = "deterministic"  # "deterministic" or "gaussian"
 ROBOMIMIC_TASK_FILES = []     # Empty discovers local *.hdf5 under data/robomimic, excluding .cache
 ROBOMIMIC_OBS_KEYS = []       # Empty auto-detects low-dimensional obs keys
 ROBOMIMIC_TEST_RATIO = 0.2

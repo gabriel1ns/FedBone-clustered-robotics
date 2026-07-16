@@ -131,22 +131,24 @@ class TaskAdaptation(nn.Module):
 
 class TaskHead(nn.Module):
     """Client-side: Task-specific output head"""
-    def __init__(self, hidden_size, num_classes, task_type='classification'):
+    def __init__(self, hidden_size, num_classes, task_type='classification', policy_type='deterministic'):
         super().__init__()
         self.task_type = task_type
+        self.policy_type = policy_type
+        output_dim = num_classes * 2 if policy_type == "gaussian" and task_type == "regression" else num_classes
         
         if task_type == 'classification':
             self.head = nn.Sequential(
                 nn.Dropout(0.3),
                 nn.Linear(hidden_size, hidden_size // 2),
                 nn.GELU(),
-                nn.Linear(hidden_size // 2, num_classes)
+                nn.Linear(hidden_size // 2, output_dim)
             )
         elif task_type == 'regression':
             self.head = nn.Sequential(
                 nn.Linear(hidden_size, hidden_size // 2),
                 nn.GELU(),
-                nn.Linear(hidden_size // 2, num_classes)
+                nn.Linear(hidden_size // 2, output_dim)
             )
         
     def forward(self, x):
@@ -155,19 +157,27 @@ class TaskHead(nn.Module):
         if self.task_type == 'classification':
             x = x[:, -1, :]  # (batch, hidden_size)
         else:
-            x = x.mean(dim=1)  # Global average pooling
+            x = x[:, -1, :]  # Predict the action for the last observation in the window.
             
         return self.head(x)
 
 
 class FedBoneClient(nn.Module):
     """Complete client model: Embedding + Task Adaptation + Task Head"""
-    def __init__(self, num_features, embed_dim, hidden_size, num_classes, task_type='classification'):
+    def __init__(
+        self,
+        num_features,
+        embed_dim,
+        hidden_size,
+        num_classes,
+        task_type='classification',
+        policy_type='deterministic',
+    ):
         super().__init__()
         
         self.embedding = PatchEmbedding(num_features, embed_dim)
         self.task_adaptation = TaskAdaptation(hidden_size)
-        self.task_head = TaskHead(hidden_size, num_classes, task_type)
+        self.task_head = TaskHead(hidden_size, num_classes, task_type, policy_type)
         
     def forward(self, x, general_features=None):
         """
@@ -213,9 +223,23 @@ class FedBoneServer(nn.Module):
 
 
 # Factory functions
-def create_fedbone_client(num_features, embed_dim, hidden_size, num_classes, task_type='classification'):
+def create_fedbone_client(
+    num_features,
+    embed_dim,
+    hidden_size,
+    num_classes,
+    task_type='classification',
+    policy_type='deterministic',
+):
     """Create FedBone client model"""
-    return FedBoneClient(num_features, embed_dim, hidden_size, num_classes, task_type)
+    return FedBoneClient(
+        num_features,
+        embed_dim,
+        hidden_size,
+        num_classes,
+        task_type,
+        policy_type,
+    )
 
 
 def create_fedbone_server(embed_dim, hidden_size, num_layers=2, dropout=0.3):

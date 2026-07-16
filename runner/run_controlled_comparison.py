@@ -46,6 +46,18 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=config.SEED)
     parser.add_argument("--device", default=config.DEVICE)
     parser.add_argument(
+        "--sequence-length",
+        type=int,
+        default=config.SEQUENCE_LENGTH,
+        help="Number of consecutive observations per training sample. Use 10 for BC-RNN-style RoboMimic policies.",
+    )
+    parser.add_argument(
+        "--policy-type",
+        choices=("deterministic", "gaussian"),
+        default=getattr(config, "POLICY_TYPE", "deterministic"),
+        help="Action head and loss. gaussian uses diagonal Gaussian NLL and evaluates with mean actions.",
+    )
+    parser.add_argument(
         "--output",
         default=str(config.RESULTS_DIR / "controlled_comparison_results.json"),
     )
@@ -61,19 +73,20 @@ def state_hash(server_state, client_states):
     return digest.hexdigest()
 
 
-def restore_clients(client_datasets, initial_states, device):
+def restore_clients(client_datasets, initial_states, device, policy_type):
     clients, _ = build_fedbone_clients(
         client_datasets,
         device,
         config.EMBED_DIM,
         config.HIDDEN_SIZE,
+        policy_type=policy_type,
     )
     for client, state in zip(clients, initial_states):
         client.client_model.load_state_dict(state)
     return clients
 
 
-def save_controlled_checkpoint(path, method, server, clients, tasks):
+def save_controlled_checkpoint(path, method, server, clients, tasks, sequence_length, policy_type):
     client_states = {}
     for client in clients:
         task_id = int(client.task_id)
@@ -83,6 +96,7 @@ def save_controlled_checkpoint(path, method, server, clients, tasks):
             "task_id": task_id,
             "task_name": client.task_name,
             "task_type": client.task_type,
+            "policy_type": getattr(client, "policy_type", policy_type),
             "state_dict": clone_state_dict(client.client_model.state_dict()),
         }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +110,8 @@ def save_controlled_checkpoint(path, method, server, clients, tasks):
             "hidden_size": config.HIDDEN_SIZE,
             "num_layers": config.NUM_LAYERS,
             "dropout": config.DROPOUT,
+            "sequence_length": int(sequence_length),
+            "policy_type": policy_type,
         },
     }, path)
 
@@ -121,6 +137,7 @@ def main():
         max_demos_per_task=args.max_demos_per_task,
         seed=args.seed,
         success_threshold=config.ROBOMIMIC_SUCCESS_THRESHOLD,
+        sequence_length=args.sequence_length,
     )
     test_loaders = {
         task_id: get_dataloader(dataset, config.BATCH_SIZE, shuffle=False)
@@ -133,6 +150,7 @@ def main():
         device,
         config.EMBED_DIM,
         config.HIDDEN_SIZE,
+        policy_type=args.policy_type,
     )
     initial_task_states = initialize_task_states(initial_clients)
     synchronize_clients_to_task_states(initial_clients, initial_task_states)
@@ -188,6 +206,8 @@ def main():
             "local_epochs": config.LOCAL_EPOCHS,
             "batch_size": config.BATCH_SIZE,
             "learning_rate": config.LEARNING_RATE,
+            "sequence_length": args.sequence_length,
+            "policy_type": args.policy_type,
             "seed": args.seed,
             "initialization_hash": initialization_hash,
             "server_params": server_params,
@@ -205,7 +225,12 @@ def main():
         print(f"CONTROLLED METHOD: {method}")
         print("=" * 80)
         set_seed(args.seed)
-        clients = restore_clients(client_datasets, initial_client_states, device)
+        clients = restore_clients(
+            client_datasets,
+            initial_client_states,
+            device,
+            args.policy_type,
+        )
         server = create_fedbone_server(
             config.EMBED_DIM,
             config.HIDDEN_SIZE,
@@ -242,6 +267,8 @@ def main():
             trained_server,
             checkpoint_clients,
             tasks,
+            args.sequence_length,
+            args.policy_type,
         )
         print(f"Saved {method} checkpoint to {checkpoint_path}")
         del clients, server, trained_server, checkpoint_clients

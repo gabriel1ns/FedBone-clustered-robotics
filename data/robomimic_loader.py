@@ -93,10 +93,58 @@ def _load_demo(handle, demo_key: str, obs_keys: Sequence[str]) -> Tuple[np.ndarr
     return observations[:length], actions[:length]
 
 
-def _stack_demos(items: Sequence[Tuple[np.ndarray, np.ndarray]]) -> Tuple[np.ndarray, np.ndarray]:
-    observations = np.concatenate([item[0] for item in items], axis=0)
-    actions = np.concatenate([item[1] for item in items], axis=0)
-    return observations[:, None, :], actions
+def _window_demo(
+    observations: np.ndarray,
+    actions: np.ndarray,
+    sequence_length: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if sequence_length < 1:
+        raise ValueError("sequence_length must be >= 1.")
+    if len(observations) == 0:
+        return (
+            np.zeros((0, sequence_length, observations.shape[-1]), dtype=np.float32),
+            np.zeros((0, actions.shape[-1]), dtype=np.float32),
+        )
+
+    windows = []
+    targets = []
+    for end_index in range(len(observations)):
+        start_index = end_index - sequence_length + 1
+        if start_index < 0:
+            padding = np.repeat(
+                observations[0:1],
+                repeats=-start_index,
+                axis=0,
+            )
+            window = np.concatenate([padding, observations[:end_index + 1]], axis=0)
+        else:
+            window = observations[start_index:end_index + 1]
+        windows.append(window)
+        targets.append(actions[end_index])
+    return np.asarray(windows, dtype=np.float32), np.asarray(targets, dtype=np.float32)
+
+
+def _stack_demos(
+    items: Sequence[Tuple[np.ndarray, np.ndarray]],
+    sequence_length: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    windowed = [
+        _window_demo(observations, actions, sequence_length)
+        for observations, actions in items
+    ]
+    windowed = [
+        (observations, actions)
+        for observations, actions in windowed
+        if len(observations) > 0
+    ]
+    if not windowed:
+        raise ValueError(
+            "No demonstrations are long enough for "
+            f"sequence_length={sequence_length}."
+        )
+    observations = np.concatenate([item[0] for item in windowed], axis=0)
+    actions = np.concatenate([item[1] for item in windowed], axis=0)
+    return observations, actions
 
 
 def _split_demo_keys(keys: Sequence[str], test_ratio: float, seed: int):
@@ -109,7 +157,7 @@ def _split_demo_keys(keys: Sequence[str], test_ratio: float, seed: int):
     return train_keys, test_keys
 
 
-def _load_task_file(path: Path, obs_keys, test_ratio, max_demos, seed):
+def _load_task_file(path: Path, obs_keys, test_ratio, max_demos, seed, sequence_length):
     with h5py.File(path, "r") as handle:
         if "data" not in handle:
             raise KeyError(f"{path} is not a RoboMimic-style HDF5 file: missing /data.")
@@ -122,8 +170,8 @@ def _load_task_file(path: Path, obs_keys, test_ratio, max_demos, seed):
         train_items = [_load_demo(handle, key, selected_obs_keys) for key in train_keys]
         test_items = [_load_demo(handle, key, selected_obs_keys) for key in test_keys]
 
-    train_x, train_y = _stack_demos(train_items)
-    test_x, test_y = _stack_demos(test_items)
+    train_x, train_y = _stack_demos(train_items, sequence_length)
+    test_x, test_y = _stack_demos(test_items, sequence_length)
     return train_x, train_y, test_x, test_y, selected_obs_keys
 
 
@@ -161,6 +209,7 @@ def load_robomimic_data(
     max_demos_per_task=0,
     seed=42,
     success_threshold=0.05,
+    sequence_length=1,
 ):
     """
     Load RoboMimic low-dimensional HDF5 datasets for FedBone.
@@ -184,6 +233,7 @@ def load_robomimic_data(
             test_ratio,
             max_demos_per_task,
             seed + task_id,
+            sequence_length,
         )
         train_x, train_y, test_x, test_y, normalization_stats = _normalize_task_arrays(
             train_x,
@@ -203,6 +253,7 @@ def load_robomimic_data(
             "success_threshold": float(success_threshold),
             "source_file": str(path),
             "obs_keys": selected_obs_keys,
+            "sequence_length": int(sequence_length),
             "normalization": normalization_stats,
         })
 
